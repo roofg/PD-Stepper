@@ -1,31 +1,21 @@
-/*
- * PD Stepper Webpage Example:
- * 
- *********  Software Version 1.0 ******************
- * 
- *    How to Use:
- * 1. Connect to created WiFi Network named "PD Stepper"
- * 2. On a browser visit 192.168.4.1
- * 
- *  For more info and to purchase PD Stepper kits visit:
- *  https://thingsbyjosh.com
- * 
- * TODO:
- * - More TMC error conditions (including power bad?)
- * - Stall guard disabled at lower speeds
- * - Fix non smooth position control (due to webserver interuptions)
-*/
-
-
-
+#include <Arduino.h>
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h> // https://github.com/ESP32Async/ESPAsyncWebServer (ENSURE THIS VERSION IS USED)
-#include <AsyncTCP.h>  //https://github.com/ESP32Async/AsyncTCP/tree/main (ENSURE THIS VERSION IS USED)
-#include <TMC2209.h> //  https://github.com/janelia-arduino/TMC2209/tree/main
-#include <Preferences.h> //for saving to flash (instead of old EEPROM lib)
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
+#include <Preferences.h>
+#include <Wire.h>
+
 #include "index_html.h"
+#include "tmc_driver.h"
 
 Preferences preferences;
+
+// forward declarations (needed because we're compiling as C++ source)
+void readEncoder();
+void configureSettings();
+void readSettings();
+void writeSettings();
+
 
 //access point SSID and password (password = "" for no password)
 const char *ssid = "PD Stepper";
@@ -33,14 +23,7 @@ const char *password = "";
 
 AsyncWebServer server(80);
 
-//TMC2209 setup
-TMC2209 stepper_driver;
-HardwareSerial serial_stream(2); // Use UART2 (pins 16 and 17 on ESP32-C3)
-const long SERIAL_BAUD_RATE = 115200;
-
-const uint8_t RUN_CURRENT_PERCENT = 20; //how much current to run at (0-100%)
-
-//TMC2209 Stepper Driver
+//TMC2209 pins/config (kept here; driver uses these constants)
 #define TMC_EN  21
 #define STEP    5
 #define DIR     6
@@ -69,7 +52,6 @@ const uint8_t RUN_CURRENT_PERCENT = 20; //how much current to run at (0-100%)
 #define AUX1    14
 #define AUX2    13
 
-
 //Global variables
 int set_speed = 0;
 bool PGState = 0; //state of the power good signal from PD sink IC
@@ -77,7 +59,6 @@ bool enabledState = 0;
 bool state = 0; //step state
 
 //AS5600 Hall Effect Encoder
-#include <Wire.h> //For I2C for encoder
 #define AS5600_ADDRESS 0x36 // I2C address of the AS5600 sensor
 signed long total_encoder_counts = 0;
 unsigned long lastEncRead = 0;
@@ -137,12 +118,7 @@ String readVoltage() {
   }
 
   float avgMilliVolts = (float)mvSum / (float)samples;
-  
-  // avgMilliVolts / 1000.0 = Actual voltage at the ESP32 pin
-  // Dividing by DIV_RATIO scales it back up to the battery/VBUS voltage
   VBusVoltage = (avgMilliVolts / 1000.0) / DIV_RATIO;
-
-  // Returning with 2 decimal places for better readability
   return String(VBusVoltage, 2) + "V";
 }
 
@@ -153,33 +129,18 @@ String readEncoderPos(){
 }
 
 String readTMCStatus(){
-  bool hardware_disabled = stepper_driver.hardwareDisabled();
-  if (hardware_disabled){
+  if (tmc_hardwareDisabled()){
    return ("Hardware Disabled");
   }
-
-  TMC2209::Status status = stepper_driver.getStatus();
-  if (status.over_temperature_warning){
-    return ("Over Temp Warning");
-  }
-  else if (status.over_temperature_shutdown){
-    return ("Over Temp Shutdown");
-  }
-  return ("No Errors");
+  return tmc_getStatusString();
 }
 
 String readStallStatus(){
-  return String(stepper_driver.getStallGuardResult());
-//  if (digitalRead(DIAG) == HIGH){
-//    return ("Stalled");
-//  } else{
-//    return ("Not Stalled");
-//  }
+  return String(tmc_getStallGuardResult());
 }
 
 
-//updates placeholder varibles in the HTML code //puts current arduino settings into webpage
-//Puts stored values into the HTML value
+//updates placeholder varibles in the HTML code
 String processor(const String& var)
 {
   if(var == "enabled1"){
@@ -207,20 +168,19 @@ String processor(const String& var)
   if(var == "standstill_mode"){
      return String(standstillMode);
   }
-  return String(); // Empty string for undefined placeholders
+  return String("");
 }
 
 
 void setup() {
-    //PD Trigger Setup
+  //PD Trigger Setup
   pinMode(PG, INPUT);
   pinMode(CFG1, OUTPUT);
   pinMode(CFG2, OUTPUT);
   pinMode(CFG3, OUTPUT);
-                            //  5V   9V   12V   15V   20V  (Can also be changed on the fly)
-  digitalWrite(CFG1, LOW);  //  1    0     0     0     0
-  digitalWrite(CFG2, LOW);  //  -    0     0     1     1
-  digitalWrite(CFG3, HIGH); //  -    0     1     1     0
+  digitalWrite(CFG1, LOW);
+  digitalWrite(CFG2, LOW);
+  digitalWrite(CFG3, HIGH);
 
   //General
   pinMode(SW1, INPUT);
@@ -230,47 +190,41 @@ void setup() {
   pinMode(LED2, OUTPUT);
   pinMode(STEP, OUTPUT);
   pinMode(DIR, OUTPUT);
-  
 
-  //Setup serial comms with TMC2209
+  //TMC pins
   pinMode(MS1, OUTPUT);
   pinMode(MS1, OUTPUT);
   pinMode(TMC_EN, OUTPUT);
   pinMode(DIAG, INPUT);
-  digitalWrite(TMC_EN, LOW); //Enabled here and later enabled/disabled over UART
-
+  digitalWrite(TMC_EN, LOW);
   digitalWrite(MS2, LOW);
 
   //AS5600 Hall Encoder Setup
-  Wire.begin(SDA, SCL);  //start wire with earlier defined pins
+  Wire.begin();
 
   //ADC Setup
   analogSetPinAttenuation(VBUS, ADC_11db);
 
   readSettings(); //get saved values from EEPROM
-  
-  stepper_driver.setup(serial_stream, SERIAL_BAUD_RATE, TMC2209::SERIAL_ADDRESS_0, TMC_RX, TMC_TX);
-  stepper_driver.setRunCurrent(RUN_CURRENT_PERCENT);
-  stepper_driver.enableAutomaticCurrentScaling(); //current control mode
-//  stepper_driver.enableCoolStep();
-  stepper_driver.enableStealthChop(); //stealth chop needs to be enabled for stall detect
-  stepper_driver.setCoolStepDurationThreshold(5000); //TCOOLTHRS (DIAG only enabled when TSTEP smaller than this)
-  stepper_driver.disable();
+
+  tmc_init(TMC_RX, TMC_TX);
+  tmc_setRunCurrent(20);
+  tmc_enableAutomaticCurrentScaling();
+  tmc_enableStealthChop();
+  tmc_setCoolStepDurationThreshold(5000);
+  tmc_disable();
 
   configureSettings(); //use saved settings
 
-  delay(200); //delay needed before "Serial.begin" to ensure bootloader mode entered correctly. Otherwise bootloader mode may need to be manually entered by holding BOOT, press RST, release BOOT
+  delay(200);
   Serial.begin(115200);
   Serial.println("Code Starting");
-  
-  // Set up ESP32 as an Access Point
   WiFi.softAP(ssid, password);
   IPAddress ip = WiFi.softAPIP();
   Serial.print("AP IP address: ");
   Serial.println(ip);
 
-  
-  // Serve HTML page with JavaScript for updating values
+  // Serve HTML page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html", index_html, processor);
   });
@@ -290,26 +244,23 @@ void setup() {
     request->send(200, "text/plain", readStallStatus().c_str());
   });
 
-  // Route to handle slider position update
   server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (request->hasParam("slider", true)) {
       const AsyncWebParameter* p = request->getParam("slider", true);
       pendingSpeed = p->value().toInt();
-      speedUpdatePending = true; // Signal the loop to update velocity
+      speedUpdatePending = true;
     }
-  
     if (request->hasParam("positionControl", true)) {
       const AsyncWebParameter* p = request->getParam("positionControl", true);
       pendingPosMode = p->value().toInt();
-      posUpdatePending = true; // Signal the loop to update position
+      posUpdatePending = true;
     }
     request->send(200);
   });
 
-  //handle post request of saving form
   server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request) {
     String inputMessage;
-    if (request->hasParam("enabled1", true)) { //when checked "enabled1" variable is present
+    if (request->hasParam("enabled1", true)) {
       enabled1 = "enabled";
     } else {
       enabled1 = "disabled";
@@ -317,13 +268,12 @@ void setup() {
     if (request->hasParam("setvoltage", true)) {
       inputMessage = request->getParam("setvoltage", true)->value();
       setVoltage = inputMessage;     
-      stepper_driver.moveAtVelocity(0); //stop when voltage changed
+      tmc_moveAtVelocity(0);
     }
     if (request->hasParam("microsteps", true)) {
       inputMessage = request->getParam("microsteps", true)->value();
       microsteps = inputMessage;
-
-      stepper_driver.moveAtVelocity(0); //stop when microsteps changed
+      tmc_moveAtVelocity(0);
     }
     if (request->hasParam("current", true)) {
       inputMessage = request->getParam("current", true)->value();
@@ -336,32 +286,28 @@ void setup() {
     if (request->hasParam("standstill_mode", true)) {
       inputMessage = request->getParam("standstill_mode", true)->value();
       standstillMode = inputMessage;
-
-      writeSettings();  //only save to EEPROM if values from "save" received
+      writeSettings();
     }
-//    request->send(200, "text/html", "<h2>Saved</h2><br><a href=\"/\">Return to Home Page</a>"); //respond with save page
-    request->redirect("/"); // Redirct back to main page to avaid having /save in URL
+    request->redirect("/");
   });
 
   server.begin();
 
-  digitalWrite(LED1, HIGH); //flash LED after setep complete
+  digitalWrite(LED1, HIGH);
   delay(200);
-  digitalWrite(LED1, LOW); 
+  digitalWrite(LED1, LOW);
 
 }
 
 void loop() {
-
-  //Handle WebServer hardware requests safely in the main thread
   if (speedUpdatePending) {
     set_speed = pendingSpeed;
-    stepper_driver.moveAtVelocity(set_speed * (microsteps.toInt()));
+    tmc_moveAtVelocity(set_speed * (microsteps.toInt()));
     speedUpdatePending = false;
   }
 
   if (posUpdatePending) {
-    stepper_driver.moveAtVelocity(0); // Stop velocity mode
+    tmc_moveAtVelocity(0);
     if (pendingPosMode == 1)      setPoint -= 25600;
     else if (pendingPosMode == 2) setPoint -= 12800;
     else if (pendingPosMode == 3) setPoint += 12800;
@@ -369,47 +315,40 @@ void loop() {
     posUpdatePending = false;
   }
 
-  if (millis() - lastEncRead >= mainFreq){ //main loop
+  if (millis() - lastEncRead >= mainFreq){
     lastEncRead = millis();
-    //readEncoder(); //need to constantly read encoder in order to catch wrap around
-
-    digitalWrite(LED2, digitalRead(DIAG)); //Stall detection
-
+    digitalWrite(LED2, digitalRead(DIAG));
     PGState = digitalRead(PG);
-    if (PGState == LOW and enabled1 == "enabled" and enabledState == 0){ //only enable if PD chip reports good
-      stepper_driver.enable();
+    if (PGState == LOW and enabled1 == "enabled" and enabledState == 0){
+      tmc_enable();
       enabledState = 1;
-    } else if ((PGState == HIGH or enabled1 == "disabled") and enabledState == 1){ //Disable stepper if box unchecked or PG is high
-      stepper_driver.disable();
+    } else if ((PGState == HIGH or enabled1 == "disabled") and enabledState == 1){
+      tmc_disable();
       enabledState = 0;
     }
   }
 
-  
-  //position control done here (open-loop for now)
-  int delaySpeed = 4500; //delay speed smaller value = faster
+  int delaySpeed = 4500;
   int microSteps = microsteps.toInt();
-  int delaySpeedAdjusted = delaySpeed/microSteps; //adjusting speed depending on microsteps
-  
-  if (setPoint > CurrentPosition){ //position control
-    if (micros()-lastStep > delaySpeedAdjusted){ //always move same speed regardless of what microsteps set
+  int delaySpeedAdjusted = delaySpeed/microSteps;
+  if (setPoint > CurrentPosition){
+    if (micros()-lastStep > delaySpeedAdjusted){
       digitalWrite(DIR, LOW);
       digitalWrite(STEP, state);
       state = !state;
-      CurrentPosition = CurrentPosition + (256/microSteps);  //update current position taking into account microsteps set
+      CurrentPosition = CurrentPosition + (256/microSteps);
       lastStep = micros();
     }
-  } else if (setPoint < CurrentPosition){ //position control
+  } else if (setPoint < CurrentPosition){
     if (micros()-lastStep > delaySpeedAdjusted){
       digitalWrite(DIR, HIGH);
       digitalWrite(STEP, state);
       state = !state;
-      CurrentPosition = CurrentPosition - (256/microSteps);  //update current position taking into account microsteps set
+      CurrentPosition = CurrentPosition - (256/microSteps);
       lastStep = micros();
     }
   }
 
-  //Handle buttons inputs (seperate velocity control)
   if ((millis() - lastDebounceTime) > debounceDelay) {
     lastDebounceTime = millis();
     bool currentIncButtonState = digitalRead(SW3);
@@ -423,7 +362,7 @@ void loop() {
         if (buttonSpeed > 330){
           buttonSpeed = 330;
         }
-        stepper_driver.moveAtVelocity(buttonSpeed*(microsteps.toInt()));
+        tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
       }
     }
   
@@ -434,7 +373,7 @@ void loop() {
         if (buttonSpeed < -330){
           buttonSpeed = -330;
         }
-        stepper_driver.moveAtVelocity(buttonSpeed*(microsteps.toInt()));
+        tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
       }
     }
   
@@ -442,92 +381,69 @@ void loop() {
       resetButtonState = currentResetButtonState;
       if (resetButtonState == LOW) {
         buttonSpeed = 0;
-        stepper_driver.moveAtVelocity(0);
+        tmc_moveAtVelocity(0);
       }
     }
   }
 
-  
 }
 
 void readEncoder(){
   int raw_counts;
   static int prev_raw_counts = 0;
   static signed long revolutions = 0;
-//  float angle;
-    // Request the raw encoder counts from the AS5600 sensor
   Wire.beginTransmission(AS5600_ADDRESS);
-  Wire.write(0x0C); // Register address for raw angle output (0x0C)
+  Wire.write(0x0C);
   Wire.endTransmission(false);
-  Wire.requestFrom(AS5600_ADDRESS, 2); // Request 2 bytes of data
+  Wire.requestFrom(AS5600_ADDRESS, 2);
   if (Wire.available() >= 2) {
-    raw_counts = Wire.read() << 8 | Wire.read(); // Combine two bytes to get the counts value
+    raw_counts = Wire.read() << 8 | Wire.read();
   }
-
-  // Convert raw counts to angle in degrees if that is what's needed
-//  angle = (raw_counts * 360.0) / 4096.0;
-
-  // Check to see if it has gone past "home" over one full rotation
   if (prev_raw_counts > 3000 && raw_counts < 1000) {
     revolutions++;
   } else if (prev_raw_counts < 1000 && raw_counts > 3000) {
     revolutions--;
   }
-
-  // Update the previous raw counts
   prev_raw_counts = raw_counts;
   total_encoder_counts = raw_counts + (4096 * revolutions);
 }
 
-
-
-//takes saved values impliments them (e.g after settings changed)
 void configureSettings(){
-
   if (setVoltage == "5"){
-                                 //  5V   9V   12V   15V   20V  (Can also be changed on the fly)
-      digitalWrite(CFG1, HIGH);  //  1    0     0     0     0
+      digitalWrite(CFG1, HIGH);
   } else if (setVoltage == "9"){
-                                //  5V   9V   12V   15V   20V  (Can also be changed on the fly)
-      digitalWrite(CFG1, LOW);  //  1    0     0     0     0
-      digitalWrite(CFG2, LOW);  //  -    0     0     1     1
-      digitalWrite(CFG3, LOW);  //  -    0     1     1     0
+      digitalWrite(CFG1, LOW);
+      digitalWrite(CFG2, LOW);
+      digitalWrite(CFG3, LOW);
   } else if (setVoltage == "12"){
-                                //  5V   9V   12V   15V   20V  (Can also be changed on the fly)
-      digitalWrite(CFG1, LOW);  //  1    0     0     0     0
-      digitalWrite(CFG2, LOW);  //  -    0     0     1     1
-      digitalWrite(CFG3, HIGH); //  -    0     1     1     0
+      digitalWrite(CFG1, LOW);
+      digitalWrite(CFG2, LOW);
+      digitalWrite(CFG3, HIGH);
   } else if (setVoltage == "15"){
-                                //  5V   9V   12V   15V   20V  (Can also be changed on the fly)
-      digitalWrite(CFG1, LOW);  //  1    0     0     0     0
-      digitalWrite(CFG2, HIGH); //  -    0     0     1     1
-      digitalWrite(CFG3, HIGH); //  -    0     1     1     0
+      digitalWrite(CFG1, LOW);
+      digitalWrite(CFG2, HIGH);
+      digitalWrite(CFG3, HIGH);
   } else if (setVoltage == "20"){
-                                //  5V   9V   12V   15V   20V  (Can also be changed on the fly)
-      digitalWrite(CFG1, LOW);  //  1    0     0     0     0
-      digitalWrite(CFG2, HIGH); //  -    0     0     1     1
-      digitalWrite(CFG3, LOW);  //  -    0     1     1     0
+      digitalWrite(CFG1, LOW);
+      digitalWrite(CFG2, HIGH);
+      digitalWrite(CFG3, LOW);
   }
 
-  stepper_driver.setRunCurrent(current.toInt());
-  stepper_driver.setMicrostepsPerStep(microsteps.toInt());
-  stepper_driver.setStallGuardThreshold(stallThreshold.toInt());
+  tmc_setRunCurrent(current.toInt());
+  tmc_setMicrostepsPerStep(microsteps.toInt());
+  tmc_setStallGuardThreshold(stallThreshold.toInt());
 
-  if (standstillMode == "NORMAL"){ stepper_driver.setStandstillMode(stepper_driver.NORMAL);}
-  else if (standstillMode == "FREEWHEELING"){ stepper_driver.setStandstillMode(stepper_driver.FREEWHEELING);}
-  else if (standstillMode == "BRAKING"){ stepper_driver.setStandstillMode(stepper_driver.BRAKING);}
-  else if (standstillMode == "STRONG_BRAKING"){ stepper_driver.setStandstillMode(stepper_driver.STRONG_BRAKING);}
+  if (standstillMode == "NORMAL"){ tmc_setStandstillMode(0);} // map modes in driver
+  else if (standstillMode == "FREEWHEELING"){ tmc_setStandstillMode(1);} 
+  else if (standstillMode == "BRAKING"){ tmc_setStandstillMode(2);} 
+  else if (standstillMode == "STRONG_BRAKING"){ tmc_setStandstillMode(3);} 
 }
 
-//Read saved settings from EEPROM//
 void readSettings(){ 
-
-  preferences.begin("settings", false); //open the settings namespace
-
+  preferences.begin("settings", false);
   enabled1 = preferences.getString("enable", ""); 
-  
-  if (enabled1 == ""){ //EEPROM has not been saved to before so save defaults
-    preferences.end(); //close to write EEPROM can open again
+  if (enabled1 == ""){ 
+    preferences.end(); 
     enabled1 = "enabled";
     setVoltage = "12";
     microsteps = "32";
@@ -546,23 +462,15 @@ void readSettings(){
   }
 }
 
-
-
-//save settings to flash
-void writeSettings(){ //easiest (not best) is to write strings and then re-calculate values which use that
-
+void writeSettings(){ 
   preferences.begin("settings", false);
-
   preferences.putString("enable", enabled1); 
   preferences.putString("voltage", setVoltage); 
   preferences.putString("microsteps", microsteps); 
   preferences.putString("current", current); 
   preferences.putString("stallThreshold", stallThreshold); 
   preferences.putString("standstillMode", standstillMode); 
-
   Serial.println("Saving settings to flash");
-
   preferences.end();
-  
-  configureSettings(); //use new settings
+  configureSettings();
 }
