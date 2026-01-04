@@ -387,6 +387,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
       <div id="bottom-box">
         <input class="save-button" type="submit" value="Save">
+        <input class="save-button" type="submit" value="1">
       </div>
     </form>
     
@@ -413,6 +414,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <button class="pos-button" type="submit" onclick="but2()"><</button>
     <button class="pos-button" type="submit" onclick="but3()">></button>
     <button class="pos-button" type="submit" onclick="but4()">>></button>
+    <button class="save-button" type="submit" onclick="sendNetCmd()">netCmd</button>
    </div>
    
     <br>
@@ -603,6 +605,20 @@ const char index_html[] PROGMEM = R"rawliteral(
     xhr.send('positionControl=4');
   }
   
+  /* Send network command to the device */
+  function sendNetCmd() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/netcmd', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr.onreadystatechange = function() {
+      if (this.readyState == 4) {
+        // optionally show response or toast
+        console.log('/netcmd ->', this.status, this.responseText);
+      }
+    };
+    xhr.send('Netcmd=1');
+  }
+
 </script>
 
 

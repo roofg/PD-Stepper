@@ -7,6 +7,7 @@
 
 #include "index_html.h"
 #include "tmc_driver.h"
+#include "dual_core_scaffold.h"
 
 Preferences preferences;
 
@@ -171,7 +172,7 @@ String processor(const String& var)
   return String("");
 }
 
-
+// Arduino framwork setup defaultly runs on core 1
 void setup() {
   //PD Trigger Setup
   pinMode(PG, INPUT);
@@ -215,14 +216,23 @@ void setup() {
   tmc_disable();
 
   configureSettings(); //use saved settings
+  
+  // Set up USB Serial for monitoring with pio
+  USBSerial.begin(115200);  // Baud rate often ignored for native USB
+  delay(2000); // Give some time for the USB serial to initialize
+  USBSerial.println("SerialUSB ready!");
+  USBSerial.flush();
 
-  delay(200);
-  Serial.begin(115200);
-  Serial.println("Code Starting");
+    // Set up Wifi and ESP32 so both use same network segment. Here 192.168.4.X
+    IPAddress local_ip(192,168,4,4);   // esp32 will be 192.168.4.4 -> open browser for web interface
+    IPAddress gateway(192,168,4,1);     // gateway (AP) IP network card address, check terminal ipconfig for wifi interface details
+    IPAddress subnet(255,255,255,0);    // subnet mask
+    WiFi.softAPConfig(local_ip, gateway, subnet);
+
   WiFi.softAP(ssid, password);
   IPAddress ip = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(ip);
+  USBSerial.print("AP IP address: ");
+  USBSerial.println(ip);
 
   // Serve HTML page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -242,6 +252,24 @@ void setup() {
   });
   server.on("/stallguard", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/plain", readStallStatus().c_str());
+  });
+
+  // Endpoint to trigger network-task command (Net Cmd)
+  server.on("/netcmd", HTTP_POST, [](AsyncWebServerRequest *request){
+    // For this minimal endpoint we ignore payload details and send a demo cmd
+    USBSerial.printf("Webserver netcmd running on core %d\n", xPortGetCoreID());
+    USBSerial.println("Net Cmd received");
+    request->send(200, "text/plain", "ok"); // -> return post OK to web interface
+
+    // Parse command
+    if (request->hasParam("Netcmd", true)) {
+      const AsyncWebParameter* p = request->getParam("Netcmd", true);
+      int cmdId = 1; // Netcmd
+      int cmdValue = p->value().toInt();
+      USBSerial.println("Dispatching network command value: " + String(cmdValue));
+      bool result = dispatch_network_cmd(cmdId, cmdValue);
+      USBSerial.println("Dispatch result: " + String(result));
+    }
   });
 
   server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -296,95 +324,111 @@ void setup() {
   digitalWrite(LED1, HIGH);
   delay(200);
   digitalWrite(LED1, LOW);
+  // To enable the dual-core demo (controller pinned to core 0, network on core 1),
+  // uncomment the next line. The demo creates example tasks and a queue.
+  start_dual_core_demo();
 
+//   delay(2000);
+
+//   stop_dual_core_demo();
+  USBSerial.println("Setup complete");
 }
 
+// Arduino framwork main loop defaultly runs on core 1
 void loop() {
-  if (speedUpdatePending) {
-    set_speed = pendingSpeed;
-    tmc_moveAtVelocity(set_speed * (microsteps.toInt()));
-    speedUpdatePending = false;
-  }
 
-  if (posUpdatePending) {
-    tmc_moveAtVelocity(0);
-    if (pendingPosMode == 1)      setPoint -= 25600;
-    else if (pendingPosMode == 2) setPoint -= 12800;
-    else if (pendingPosMode == 3) setPoint += 12800;
-    else if (pendingPosMode == 4) setPoint += 25600;
-    posUpdatePending = false;
-  }
+  digitalWrite(LED1, HIGH);
+  delay(1000);
+  digitalWrite(LED1, LOW);
+  delay(1000);
+  USBSerial.printf("Main loop running on core %d\n", xPortGetCoreID());
 
-  if (millis() - lastEncRead >= mainFreq){
-    lastEncRead = millis();
-    digitalWrite(LED2, digitalRead(DIAG));
-    PGState = digitalRead(PG);
-    if (PGState == LOW and enabled1 == "enabled" and enabledState == 0){
-      tmc_enable();
-      enabledState = 1;
-    } else if ((PGState == HIGH or enabled1 == "disabled") and enabledState == 1){
-      tmc_disable();
-      enabledState = 0;
-    }
-  }
 
-  int delaySpeed = 4500;
-  int microSteps = microsteps.toInt();
-  int delaySpeedAdjusted = delaySpeed/microSteps;
-  if (setPoint > CurrentPosition){
-    if (micros()-lastStep > delaySpeedAdjusted){
-      digitalWrite(DIR, LOW);
-      digitalWrite(STEP, state);
-      state = !state;
-      CurrentPosition = CurrentPosition + (256/microSteps);
-      lastStep = micros();
-    }
-  } else if (setPoint < CurrentPosition){
-    if (micros()-lastStep > delaySpeedAdjusted){
-      digitalWrite(DIR, HIGH);
-      digitalWrite(STEP, state);
-      state = !state;
-      CurrentPosition = CurrentPosition - (256/microSteps);
-      lastStep = micros();
-    }
-  }
+//   if (speedUpdatePending) {
+//     set_speed = pendingSpeed;
+//     tmc_moveAtVelocity(set_speed * (microsteps.toInt()));
+//     speedUpdatePending = false;
+//   }
 
-  if ((millis() - lastDebounceTime) > debounceDelay) {
-    lastDebounceTime = millis();
-    bool currentIncButtonState = digitalRead(SW3);
-    bool currentDecButtonState = digitalRead(SW1);
-    bool currentResetButtonState = digitalRead(SW2);
+//   if (posUpdatePending) {
+//     tmc_moveAtVelocity(0);
+//     if (pendingPosMode == 1)      setPoint -= 25600;
+//     else if (pendingPosMode == 2) setPoint -= 12800;
+//     else if (pendingPosMode == 3) setPoint += 12800;
+//     else if (pendingPosMode == 4) setPoint += 25600;
+//     posUpdatePending = false;
+//   }
+
+//   if (millis() - lastEncRead >= mainFreq){
+//     lastEncRead = millis();
+//     digitalWrite(LED2, digitalRead(DIAG));
+//     PGState = digitalRead(PG);
+//     if (PGState == LOW and enabled1 == "enabled" and enabledState == 0){
+//       tmc_enable();
+//       enabledState = 1;
+//     } else if ((PGState == HIGH or enabled1 == "disabled") and enabledState == 1){
+//       tmc_disable();
+//       enabledState = 0;
+//     }
+//   }
+
+//   int delaySpeed = 4500;
+//   int microSteps = microsteps.toInt();
+//   int delaySpeedAdjusted = delaySpeed/microSteps;
+//   if (setPoint > CurrentPosition){
+//     if (micros()-lastStep > delaySpeedAdjusted){
+//       digitalWrite(DIR, LOW);
+//       digitalWrite(STEP, state);
+//       state = !state;
+//       CurrentPosition = CurrentPosition + (256/microSteps);
+//       lastStep = micros();
+//     }
+//   } else if (setPoint < CurrentPosition){
+//     if (micros()-lastStep > delaySpeedAdjusted){
+//       digitalWrite(DIR, HIGH);
+//       digitalWrite(STEP, state);
+//       state = !state;
+//       CurrentPosition = CurrentPosition - (256/microSteps);
+//       lastStep = micros();
+//     }
+//   }
+
+//   if ((millis() - lastDebounceTime) > debounceDelay) {
+//     lastDebounceTime = millis();
+//     bool currentIncButtonState = digitalRead(SW3);
+//     bool currentDecButtonState = digitalRead(SW1);
+//     bool currentResetButtonState = digitalRead(SW2);
   
-    if (currentIncButtonState != incButtonState) {
-      incButtonState = currentIncButtonState;
-      if (incButtonState == LOW) {
-        buttonSpeed = buttonSpeed + 30;
-        if (buttonSpeed > 330){
-          buttonSpeed = 330;
-        }
-        tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
-      }
-    }
+//     if (currentIncButtonState != incButtonState) {
+//       incButtonState = currentIncButtonState;
+//       if (incButtonState == LOW) {
+//         buttonSpeed = buttonSpeed + 30;
+//         if (buttonSpeed > 330){
+//           buttonSpeed = 330;
+//         }
+//         tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
+//       }
+//     }
   
-    if (currentDecButtonState != decButtonState) {
-      decButtonState = currentDecButtonState;
-      if (decButtonState == LOW) {
-        buttonSpeed = buttonSpeed -30;
-        if (buttonSpeed < -330){
-          buttonSpeed = -330;
-        }
-        tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
-      }
-    }
+//     if (currentDecButtonState != decButtonState) {
+//       decButtonState = currentDecButtonState;
+//       if (decButtonState == LOW) {
+//         buttonSpeed = buttonSpeed -30;
+//         if (buttonSpeed < -330){
+//           buttonSpeed = -330;
+//         }
+//         tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
+//       }
+//     }
   
-    if (currentResetButtonState != resetButtonState) {
-      resetButtonState = currentResetButtonState;
-      if (resetButtonState == LOW) {
-        buttonSpeed = 0;
-        tmc_moveAtVelocity(0);
-      }
-    }
-  }
+//     if (currentResetButtonState != resetButtonState) {
+//       resetButtonState = currentResetButtonState;
+//       if (resetButtonState == LOW) {
+//         buttonSpeed = 0;
+//         tmc_moveAtVelocity(0);
+//       }
+//     }
+//   }
 
 }
 
@@ -452,7 +496,7 @@ void readSettings(){
     standstillMode = "NORMAL";
     writeSettings();
   } else {
-    Serial.println("Settings found in EEPROM");
+    USBSerial.println("Settings found in EEPROM");
     setVoltage = preferences.getString("voltage", ""); 
     microsteps = preferences.getString("microsteps", ""); 
     current = preferences.getString("current", ""); 
@@ -470,7 +514,7 @@ void writeSettings(){
   preferences.putString("current", current); 
   preferences.putString("stallThreshold", stallThreshold); 
   preferences.putString("standstillMode", standstillMode); 
-  Serial.println("Saving settings to flash");
+  USBSerial.println("Saving settings to flash");
   preferences.end();
   configureSettings();
 }
