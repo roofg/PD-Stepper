@@ -1,0 +1,6 @@
+{
+    "C_Cpp.default.compileCommands": "PD_Stepper_Web_Server_PlatformIO/compile_commands.json",
+    "clangd.arguments": [
+        "--query-driver=C:/Users/Gordon/.platformio/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf*"
+    ]
+}
