@@ -130,14 +130,14 @@ String readEncoderPos(){
 }
 
 String readTMCStatus(){
-  if (tmc_hardwareDisabled()){
+  if (tmc::hardwareDisabled()){
    return ("Hardware Disabled");
   }
-  return tmc_getStatusString();
+  return tmc::getStatusString();
 }
 
 String readStallStatus(){
-  return String(tmc_getStallGuardResult());
+  return String(tmc::getStallGuardResult());
 }
 
 
@@ -208,12 +208,12 @@ void setup() {
 
   readSettings(); //get saved values from EEPROM
 
-  tmc_init(TMC_RX, TMC_TX);
-  tmc_setRunCurrent(20);
-  tmc_enableAutomaticCurrentScaling();
-  tmc_enableStealthChop();
-  tmc_setCoolStepDurationThreshold(5000);
-  tmc_disable();
+  tmc::init(TMC_RX, TMC_TX);
+  tmc::setRunCurrent(20);
+  tmc::enableAutomaticCurrentScaling();
+  tmc::enableStealthChop();
+  tmc::setCoolStepDurationThreshold(5000);
+  tmc::disable();
 
   configureSettings(); //use saved settings
   
@@ -296,12 +296,12 @@ void setup() {
     if (request->hasParam("setvoltage", true)) {
       inputMessage = request->getParam("setvoltage", true)->value();
       setVoltage = inputMessage;     
-      tmc_moveAtVelocity(0);
+      tmc::moveAtVelocity(0);
     }
     if (request->hasParam("microsteps", true)) {
       inputMessage = request->getParam("microsteps", true)->value();
       microsteps = inputMessage;
-      tmc_moveAtVelocity(0);
+      tmc::moveAtVelocity(0);
     }
     if (request->hasParam("current", true)) {
       inputMessage = request->getParam("current", true)->value();
@@ -346,12 +346,12 @@ void loop() {
 
 //   if (speedUpdatePending) {
 //     set_speed = pendingSpeed;
-//     tmc_moveAtVelocity(set_speed * (microsteps.toInt()));
+  //     tmc::moveAtVelocity(set_speed * (microsteps.toInt()));
 //     speedUpdatePending = false;
 //   }
 
 //   if (posUpdatePending) {
-//     tmc_moveAtVelocity(0);
+//     tmc::moveAtVelocity(0);
 //     if (pendingPosMode == 1)      setPoint -= 25600;
 //     else if (pendingPosMode == 2) setPoint -= 12800;
 //     else if (pendingPosMode == 3) setPoint += 12800;
@@ -364,10 +364,10 @@ void loop() {
 //     digitalWrite(LED2, digitalRead(DIAG));
 //     PGState = digitalRead(PG);
 //     if (PGState == LOW and enabled1 == "enabled" and enabledState == 0){
-//       tmc_enable();
+//       tmc::enable();
 //       enabledState = 1;
 //     } else if ((PGState == HIGH or enabled1 == "disabled") and enabledState == 1){
-//       tmc_disable();
+//       tmc::disable();
 //       enabledState = 0;
 //     }
 //   }
@@ -406,7 +406,7 @@ void loop() {
 //         if (buttonSpeed > 330){
 //           buttonSpeed = 330;
 //         }
-//         tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
+//         tmc::moveAtVelocity(buttonSpeed*(microsteps.toInt()));
 //       }
 //     }
   
@@ -417,7 +417,7 @@ void loop() {
 //         if (buttonSpeed < -330){
 //           buttonSpeed = -330;
 //         }
-//         tmc_moveAtVelocity(buttonSpeed*(microsteps.toInt()));
+//         tmc::moveAtVelocity(buttonSpeed*(microsteps.toInt()));
 //       }
 //     }
   
@@ -425,7 +425,7 @@ void loop() {
 //       resetButtonState = currentResetButtonState;
 //       if (resetButtonState == LOW) {
 //         buttonSpeed = 0;
-//         tmc_moveAtVelocity(0);
+//         tmc::moveAtVelocity(0);
 //       }
 //     }
 //   }
@@ -452,6 +452,7 @@ void readEncoder(){
   total_encoder_counts = raw_counts + (4096 * revolutions);
 }
 
+/// @brief Setting pin combination negotiates USB-PD voltage. This voltage is passed to the TMC driver as motor supply voltage.
 void configureSettings(){
   if (setVoltage == "5"){
       digitalWrite(CFG1, HIGH);
@@ -473,14 +474,14 @@ void configureSettings(){
       digitalWrite(CFG3, LOW);
   }
 
-  tmc_setRunCurrent(current.toInt());
-  tmc_setMicrostepsPerStep(microsteps.toInt());
-  tmc_setStallGuardThreshold(stallThreshold.toInt());
+  tmc::setRunCurrent(current.toInt());
+  tmc::setMicrostepsPerStep(microsteps.toInt());
+  tmc::setStallGuardThreshold(stallThreshold.toInt());
 
-  if (standstillMode == "NORMAL"){ tmc_setStandstillMode(0);} // map modes in driver
-  else if (standstillMode == "FREEWHEELING"){ tmc_setStandstillMode(1);} 
-  else if (standstillMode == "BRAKING"){ tmc_setStandstillMode(2);} 
-  else if (standstillMode == "STRONG_BRAKING"){ tmc_setStandstillMode(3);} 
+  if (standstillMode == "NORMAL"){ tmc::setStandstillMode(0);} // map modes in driver
+  else if (standstillMode == "FREEWHEELING"){ tmc::setStandstillMode(1);} 
+  else if (standstillMode == "BRAKING"){ tmc::setStandstillMode(2);} 
+  else if (standstillMode == "STRONG_BRAKING"){ tmc::setStandstillMode(3);} 
 }
 
 void readSettings(){ 
