@@ -1,10 +1,12 @@
 #include "web_server.h"
 #include "dual_core_scaffold.h"
+#include "encoder.h"
 #include "index_html.h"
 #include "tmc_driver.h"
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
+
 
 // External pin definitions from main.cpp
 // (These are #defines in main.cpp, so we'll create simple constexpr
@@ -29,10 +31,8 @@ extern volatile bool posUpdatePending;
 extern volatile int pendingPosMode;
 extern bool PGState;
 extern float VBusVoltage;
-extern signed long total_encoder_counts;
 
 // Forward declarations for global functions from main.cpp
-void readEncoder();
 void writeSettings();
 
 namespace webserver {
@@ -95,8 +95,8 @@ String readVoltage() {
 }
 
 String readEncoderPos() {
-  ::readEncoder(); // Call from global namespace
-  return String(total_encoder_counts);
+  encoder::read();
+  return String(encoder::getTotalCounts());
 }
 
 String readTMCStatus() {

@@ -3,14 +3,15 @@
 #include <Wire.h>
 
 #include "dual_core_scaffold.h"
+#include "encoder.h"
 #include "index_html.h"
 #include "tmc_driver.h"
 #include "web_server.h"
 
+
 Preferences preferences;
 
 // forward declarations (needed because we're compiling as C++ source)
-void readEncoder();
 void configureSettings();
 void readSettings();
 void writeSettings();
@@ -55,8 +56,7 @@ bool enabledState = 0;
 bool state = 0; // step state
 
 // AS5600 Hall Effect Encoder
-#define AS5600_ADDRESS 0x36 // I2C address of the AS5600 sensor
-signed long total_encoder_counts = 0;
+// (Logic moved to encoder.cpp)
 unsigned long lastEncRead = 0;
 
 int mainFreq =
@@ -159,7 +159,7 @@ void setup() {
   digitalWrite(MS2, LOW);
 
   // AS5600 Hall Encoder Setup
-  Wire.begin();
+  encoder::init();
 
   // ADC Setup
   analogSetPinAttenuation(VBUS, ADC_11db);
@@ -295,25 +295,7 @@ void loop() {
   //   }
 }
 
-void readEncoder() {
-  int raw_counts;
-  static int prev_raw_counts = 0;
-  static signed long revolutions = 0;
-  Wire.beginTransmission(AS5600_ADDRESS);
-  Wire.write(0x0C);
-  Wire.endTransmission(false);
-  Wire.requestFrom(AS5600_ADDRESS, 2);
-  if (Wire.available() >= 2) {
-    raw_counts = Wire.read() << 8 | Wire.read();
-  }
-  if (prev_raw_counts > 3000 && raw_counts < 1000) {
-    revolutions++;
-  } else if (prev_raw_counts < 1000 && raw_counts > 3000) {
-    revolutions--;
-  }
-  prev_raw_counts = raw_counts;
-  total_encoder_counts = raw_counts + (4096 * revolutions);
-}
+// Encoder logic moved to encoder::read() in encoder.cpp
 
 /// @brief Setting pin combination negotiates USB-PD voltage. This voltage is
 /// passed to the TMC driver as motor supply voltage.
