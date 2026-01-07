@@ -11,4 +11,9 @@ void initWebServer(int core = 1);
 // Start the web server
 void beginWebServer();
 
+/**
+ * @brief Broadcast a text message to all connected WebSocket clients.
+ */
+void broadcastWebSocket(const String &message);
+
 } // namespace webserver

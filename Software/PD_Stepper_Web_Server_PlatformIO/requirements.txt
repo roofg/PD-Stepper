@@ -1,0 +1,2 @@
+websockets>=14.0
+# Add other dependencies here if needed

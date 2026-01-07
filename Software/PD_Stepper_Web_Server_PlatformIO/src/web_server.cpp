@@ -2,11 +2,12 @@
 #include "dual_core_scaffold.h"
 #include "encoder.h"
 #include "index_html.h"
+#include "motion_control.h"
 #include "tmc_driver.h"
+#include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
-
 
 // External pin definitions from main.cpp
 // (These are #defines in main.cpp, so we'll create simple constexpr
@@ -17,8 +18,7 @@ const float DIV_RATIO = 0.1189427313;
 
 // External references to globals in main.cpp (must be in global scope)
 extern Preferences preferences;
-extern const char *ssid;
-extern const char *password;
+
 extern String enabled1;
 extern String setVoltage;
 extern String microsteps;
@@ -37,9 +37,50 @@ void writeSettings();
 
 namespace webserver {
 
-// Local web server instance
+// access point SSID and password (password = "" for no password)
+const char *ssid = "PD Stepper";
+const char *password = "";
+
+// Local web server and websocket instances
 static AsyncWebServer server(80);
+static AsyncWebSocket ws("/ws");
 static int webServerCore = 1;
+
+void broadcastWebSocket(const String &message) { ws.textAll(message); }
+
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
+               AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    USBSerial.printf("WebSocket client #%u connected from %s\n", client->id(),
+                     client->remoteIP().toString().c_str());
+  } else if (type == WS_EVT_DISCONNECT) {
+    USBSerial.printf("WebSocket client #%u disconnected\n", client->id());
+  } else if (type == WS_EVT_DATA) {
+    AwsFrameInfo *info = (AwsFrameInfo *)arg;
+    if (info->final && info->index == 0 && info->len == len &&
+        info->opcode == WS_TEXT) {
+      data[len] = 0;
+      USBSerial.printf("WS Data received: %s\n", (char *)data);
+
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, data, len);
+      if (!error) {
+        if (doc["cmd"].is<const char *>() && doc["cmd"] == "move") {
+          long dist = doc["distance"] | 0;
+          float accel = doc["accel"] | 1000.0f;
+          float speed = doc["speed"] | 5000.0f;
+          bool isAbs = doc["abs"] | false;
+          USBSerial.printf(
+              "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
+              isAbs ? "Absolute" : "Relative", dist, accel, speed);
+          motion::addCommand(dist, accel, speed, isAbs);
+        }
+      } else {
+        USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());
+      }
+    }
+  }
+}
 
 String processor(const String &var) {
   if (var == "enabled1") {
@@ -111,6 +152,9 @@ String readStallStatus() { return String(tmc::getStallGuardResult()); }
 void initWebServer(int core) {
   webServerCore = core;
   USBSerial.printf("Initializing web server on core %d\\n", core);
+
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
 
   // Set up Wifi and ESP32 network configuration
   IPAddress local_ip(192, 168, 4, 4); // esp32 will be 192.168.4.4

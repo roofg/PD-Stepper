@@ -1,13 +1,11 @@
+#include "encoder.h"
+#include "index_html.h"
+#include "motion_control.h"
+#include "tmc_driver.h"
+#include "web_server.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <Wire.h>
-
-#include "dual_core_scaffold.h"
-#include "encoder.h"
-#include "index_html.h"
-#include "tmc_driver.h"
-#include "web_server.h"
-
 
 Preferences preferences;
 
@@ -15,10 +13,6 @@ Preferences preferences;
 void configureSettings();
 void readSettings();
 void writeSettings();
-
-// access point SSID and password (password = "" for no password)
-const char *ssid = "PD Stepper";
-const char *password = "";
 
 // TMC2209 pins/config (kept here; driver uses these constants)
 #define TMC_EN 21
@@ -160,6 +154,7 @@ void setup() {
 
   // AS5600 Hall Encoder Setup
   encoder::init();
+  encoder::startTask(20, 1); // High priority (20), 1ms interval
 
   // ADC Setup
   analogSetPinAttenuation(VBUS, ADC_11db);
@@ -167,7 +162,7 @@ void setup() {
   readSettings(); // get saved values from EEPROM
 
   tmc::init(TMC_RX, TMC_TX);
-  tmc::setRunCurrent(20);
+  tmc::setRunCurrent(100); // 100% current for high acceleration
   tmc::enableAutomaticCurrentScaling();
   tmc::enableStealthChop();
   tmc::setCoolStepDurationThreshold(5000);
@@ -188,24 +183,20 @@ void setup() {
   digitalWrite(LED1, HIGH);
   delay(200);
   digitalWrite(LED1, LOW);
-  // To enable the dual-core demo (controller pinned to core 0, network on core
-  // 1), uncomment the next line. The demo creates example tasks and a queue.
-  start_dual_core_demo();
+  // Initialize motion control system
+  motion::init();
 
-  //   delay(2000);
-
-  //   stop_dual_core_demo();
   USBSerial.println("Setup complete");
 }
 
 // Arduino framwork main loop defaultly runs on core 1
 void loop() {
 
-  digitalWrite(LED1, HIGH);
-  delay(1000);
-  digitalWrite(LED1, LOW);
-  delay(1000);
-  USBSerial.printf("Main loop running on core %d\n", xPortGetCoreID());
+  // digitalWrite(LED1, HIGH);
+  // delay(1000);
+  // digitalWrite(LED1, LOW);
+  // delay(1000);
+  // USBSerial.printf("Main loop running on core %d\n", xPortGetCoreID());
 
   //   if (speedUpdatePending) {
   //     set_speed = pendingSpeed;
