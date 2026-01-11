@@ -5,7 +5,7 @@ import json
 async def move():
     async with websockets.connect("ws://192.168.4.4/ws") as websocket:
         # Move 1: Relative movement (1 full rotation at 32 microsteps)
-        cmd1 = {"cmd": "move", "distance": 25600, "accel": 5000, "speed": 5000}
+        cmd1 = {"cmd": "move", "distance": 25600, "accel": 7000, "speed": 9000}
         await websocket.send(json.dumps(cmd1))
         print(f"Sent Relative Move: {cmd1}")
         
@@ -14,12 +14,7 @@ async def move():
                 message = await websocket.recv()
                 data = json.loads(message)
                 if data.get("type") == "telemetry":
-                    p = data.get('pos', 0)
-                    m = data.get('meas', 0)
-                    t = data.get('target', 0) # Added target variable
-                    l = data.get('lag', 0)
-                    v = data.get('vel', 0)
-                    print(f"Pos: {p}, Meas: {m}, Tgt: {t}, Lag: {l}, Vel: {v}") # Modified print statement
+                    print(f"Time: {data.get('time', 0)//1000}, Pos: {data.get('pos')}, Meas: {data.get('meas')}, Tgt: {data.get('target')}, Lag: {data.get('lag')}, Vel: {data.get('vel')}")
                 elif data.get("type") == "done":
                     print(f"Movement 1 Complete. Final Pos: {data['pos']}")
                     break
