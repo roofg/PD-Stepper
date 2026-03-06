@@ -28,5 +28,6 @@ bool addCommand(long distance, float acceleration, float maxSpeed,
  * @brief Get the current status of the motion system.
  */
 bool isRunning();
+void setTelemetryEnabled(bool enabled);
 
 } // namespace motion

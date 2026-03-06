@@ -74,6 +74,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
               "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
               isAbs ? "Absolute" : "Relative", dist, accel, speed);
           motion::addCommand(dist, accel, speed, isAbs);
+        } else if (doc["cmd"].is<const char *>() && doc["cmd"] == "telemetry") {
+          bool enabled = doc["enabled"] | true;
+          motion::setTelemetryEnabled(enabled);
+          USBSerial.printf("Telemetry %s\n", enabled ? "Enabled" : "Disabled");
         }
       } else {
         USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());

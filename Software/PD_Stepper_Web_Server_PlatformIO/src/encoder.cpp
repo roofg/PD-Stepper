@@ -5,7 +5,7 @@ namespace encoder {
 
 #define AS5600_ADDRESS 0x36
 
-static signed long total_encoder_counts = 0;
+static volatile signed long total_encoder_counts = 0;
 static int prev_raw_counts = 0;
 static signed long revolutions = 0;
 static SemaphoreHandle_t encoderMutex = NULL;
@@ -25,7 +25,7 @@ void startTask(int priority, int interval_ms) {
   if (encoderTaskHandle == NULL) {
     xTaskCreatePinnedToCore(EncoderTask, "EncoderTask", 2048,
                             (void *)interval_ms, priority, &encoderTaskHandle,
-                            1);
+                            0); // Core 0 to avoid I2C delays on Core 1
   }
 }
 
@@ -68,13 +68,6 @@ void EncoderTask(void *pvParameters) {
   }
 }
 
-signed long getTotalCounts() {
-  signed long counts = 0;
-  if (xSemaphoreTake(encoderMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    counts = total_encoder_counts;
-    xSemaphoreGive(encoderMutex);
-  }
-  return counts;
-}
+signed long getTotalCounts() { return total_encoder_counts; }
 
 } // namespace encoder

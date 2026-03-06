@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <esp_system.h>
 
 Preferences preferences;
 
@@ -154,7 +155,7 @@ void setup() {
 
   // AS5600 Hall Encoder Setup
   encoder::init();
-  encoder::startTask(20, 1); // High priority (20), 1ms interval
+  encoder::startTask(5, 10); // 100Hz at Priority 5
 
   // ADC Setup
   analogSetPinAttenuation(VBUS, ADC_11db);
@@ -176,8 +177,54 @@ void setup() {
   USBSerial.println("SerialUSB ready!");
   USBSerial.flush();
 
-  // Initialize and start web server on core 1
-  webserver::initWebServer(1);
+  // Reset reason and boot counter
+  esp_reset_reason_t reason = esp_reset_reason();
+  preferences.begin("system", false);
+  uint32_t bootCount = preferences.getUInt("boot_count", 0);
+  bootCount++;
+  preferences.putUInt("boot_count", bootCount);
+  preferences.end();
+
+  USBSerial.printf("\r\n--- SYSTEM BOOT #%u ---\r\n", bootCount);
+  USBSerial.print("Reset Reason: ");
+  switch (reason) {
+  case ESP_RST_POWERON:
+    USBSerial.println("Power-on");
+    break;
+  case ESP_RST_EXT:
+    USBSerial.println("External Pin");
+    break;
+  case ESP_RST_SW:
+    USBSerial.println("Software Reset");
+    break;
+  case ESP_RST_PANIC:
+    USBSerial.println("Software Panic");
+    break;
+  case ESP_RST_INT_WDT:
+    USBSerial.println("Interrupt Watchdog");
+    break;
+  case ESP_RST_TASK_WDT:
+    USBSerial.println("Task Watchdog");
+    break;
+  case ESP_RST_WDT:
+    USBSerial.println("Other Watchdog");
+    break;
+  case ESP_RST_DEEPSLEEP:
+    USBSerial.println("Deep Sleep");
+    break;
+  case ESP_RST_BROWNOUT:
+    USBSerial.println("Brownout");
+    break;
+  case ESP_RST_SDIO:
+    USBSerial.println("SDIO Reset");
+    break;
+  default:
+    USBSerial.println("Unknown");
+    break;
+  }
+
+  // Initialize and start web server on core 0 to leave Core 1 for motion
+  webserver::initWebServer(0);
   webserver::beginWebServer();
 
   digitalWrite(LED1, HIGH);

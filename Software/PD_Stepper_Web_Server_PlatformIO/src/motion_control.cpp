@@ -3,6 +3,7 @@
 #include "tmc_driver.h"
 #include "web_server.h"
 #include <ArduinoJson.h>
+#include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -17,6 +18,7 @@ static QueueHandle_t motionQueue = NULL;
 static QueueHandle_t telemetryQueue = NULL;
 static TaskHandle_t motionTaskHandle = NULL;
 static bool running = false;
+static volatile bool telemetryEnabled = true;
 static float globalPos = 0; // Shared state for telemetry
 static volatile float globalVelCorrection =
     0; // Shared between 1kHz and Pulse Loop
@@ -28,15 +30,22 @@ void TelemetryTask(void *pvParameters) {
   String msg;
   for (;;) {
     if (xQueueReceive(telemetryQueue, &data, portMAX_DELAY) == pdPASS) {
-      tDoc["type"] = "telemetry";
-      tDoc["time"] = data.timestamp;
-      tDoc["pos"] = data.pos;
-      tDoc["meas"] = data.meas;
-      tDoc["target"] = data.target;
-      tDoc["lag"] = data.lag;
-      tDoc["vel"] = data.vel;
-      tDoc["p_acc"] = data.p_acc;
-      tDoc["p_dist"] = data.p_dist;
+      tDoc.clear();
+      if (data.type == TELEMETRY_STOP) {
+        tDoc["type"] = "stop";
+        tDoc["reason"] = data.stopReason;
+        tDoc["pos"] = data.pos;
+      } else {
+        tDoc["type"] = "telemetry";
+        tDoc["time"] = data.timestamp;
+        tDoc["pos"] = data.pos;
+        tDoc["meas"] = data.meas;
+        tDoc["target"] = data.target;
+        tDoc["lag"] = data.lag;
+        tDoc["vel"] = data.vel;
+        tDoc["p_acc"] = data.p_acc;
+        tDoc["p_dist"] = data.p_dist;
+      }
       msg = "";
       serializeJson(tDoc, msg);
       webserver::broadcastWebSocket(msg);
@@ -259,6 +268,10 @@ void MotionTask(void *pvParameters) {
       running = true;
       tmc::enable();
 
+      // Disable watchdog for this task while moving to prevent jitter.
+      // 1ms vTaskDelay is too long and causes audible "steps" in the timing.
+      esp_task_wdt_delete(NULL);
+
       // Update config
       uSteps = (float)microsteps.toInt();
       if (uSteps < 1)
@@ -335,6 +348,8 @@ void MotionTask(void *pvParameters) {
 
         stepGen.update(outputVel, now);
 
+        // NO YIELD in the high speed loop. Core 1 is for pulses only.
+
         // -------------------------------------------------------
         // 3. Telemetry (10Hz)
         // -------------------------------------------------------
@@ -347,6 +362,7 @@ void MotionTask(void *pvParameters) {
           lastTelePos = currCounts;
 
           TelemetryData tData;
+          tData.type = TELEMETRY_UPDATE;
           tData.timestamp = now;
           tData.pos = (long)globalPos;
           tData.meas = (long)((float)currCounts * counts_to_steps * -1.0f);
@@ -358,22 +374,31 @@ void MotionTask(void *pvParameters) {
           tData.p_dist = (int)(planner.targetPos - planner.currentPos);
 
           // Non-blocking send (overwrite if full)
-          xQueueOverwrite(telemetryQueue, &tData);
+          if (telemetryEnabled) {
+            xQueueOverwrite(telemetryQueue, &tData);
+          }
         }
       }
 
       // Clean exit
       tmc::moveAtVelocity(0);
 
-      JsonDocument stopDoc;
-      stopDoc["type"] = "stop";
-      stopDoc["reason"] = stopReason;
-      stopDoc["pos"] = (long)globalPos;
-      String sMsg;
-      serializeJson(stopDoc, sMsg);
-      webserver::broadcastWebSocket(sMsg);
+      TelemetryData stopData;
+      stopData.type = TELEMETRY_STOP;
+      stopData.pos = (long)globalPos;
+      strncpy(stopData.stopReason, stopReason.c_str(),
+              sizeof(stopData.stopReason));
+      stopData.stopReason[sizeof(stopData.stopReason) - 1] = '\0';
+
+      // Send stop message to TelemetryTask to handle the WebSocket broadcast
+      // This prevents the high-priority core 1 task from blocking on network
+      // logic
+      xQueueOverwrite(telemetryQueue, &stopData);
 
       running = false;
+
+      // Re-enable watchdog for this task now that motion is done.
+      esp_task_wdt_add(NULL);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
@@ -383,11 +408,12 @@ void init() {
   motionQueue = xQueueCreate(10, sizeof(MotionCommand));
   telemetryQueue = xQueueCreate(1, sizeof(TelemetryData));
 
-  xTaskCreatePinnedToCore(MotionTask, "MotionTask", 4096, NULL, 20,
+  // Motion task on Core 1 (Dedicated for pulses)
+  xTaskCreatePinnedToCore(MotionTask, "MotionTask", 8192, NULL, 20,
                           &motionTaskHandle, 1);
 
-  xTaskCreatePinnedToCore(TelemetryTask, "TeleTask", 4096, NULL, 1, NULL,
-                          0); // Core 0 to avoid Motion interference
+  // Telemetry task on Core 0 (Higher priority than WebServer/Encoder)
+  xTaskCreatePinnedToCore(TelemetryTask, "TeleTask", 4096, NULL, 10, NULL, 0);
 }
 
 bool addCommand(long distance, float acceleration, float maxSpeed,
@@ -397,5 +423,7 @@ bool addCommand(long distance, float acceleration, float maxSpeed,
 }
 
 bool isRunning() { return running; }
+
+void setTelemetryEnabled(bool enabled) { telemetryEnabled = enabled; }
 
 } // namespace motion
