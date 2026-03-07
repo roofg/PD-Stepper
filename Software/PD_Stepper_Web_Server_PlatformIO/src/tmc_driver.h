@@ -6,8 +6,10 @@ namespace tmc {
 void init(int rx_pin, int tx_pin);
 
 void setRunCurrent(int percent);
+void setHoldCurrent(int percent);
 void enableAutomaticCurrentScaling();
 void enableStealthChop();
+void disableStealthChop();
 void setCoolStepDurationThreshold(int ms);
 void disable();
 void enable();

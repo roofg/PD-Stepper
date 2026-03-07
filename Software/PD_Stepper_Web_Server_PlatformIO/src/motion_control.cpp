@@ -1,57 +1,27 @@
 #include "motion_control.h"
 #include "encoder.h"
+#include "telemetry_provider.h"
 #include "tmc_driver.h"
-#include "web_server.h"
-#include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-extern String microsteps;
+#define VBUS_PIN 4
+#define DIV_RATIO 0.1189427313f
 
-#include "telemetry_data.h"
+extern String microsteps;
 
 namespace motion {
 
 static QueueHandle_t motionQueue = NULL;
-static QueueHandle_t telemetryQueue = NULL;
 static TaskHandle_t motionTaskHandle = NULL;
 static bool running = false;
-static volatile bool telemetryEnabled = true;
 static float globalPos = 0; // Shared state for telemetry
-static volatile float globalVelCorrection =
-    0; // Shared between 1kHz and Pulse Loop
+static volatile float globalVelCorrection = 0;
 
-// Telemetry Task (Low Priority)
-void TelemetryTask(void *pvParameters) {
-  TelemetryData data;
-  JsonDocument tDoc;
-  String msg;
-  for (;;) {
-    if (xQueueReceive(telemetryQueue, &data, portMAX_DELAY) == pdPASS) {
-      tDoc.clear();
-      if (data.type == TELEMETRY_STOP) {
-        tDoc["type"] = "stop";
-        tDoc["reason"] = data.stopReason;
-        tDoc["pos"] = data.pos;
-      } else {
-        tDoc["type"] = "telemetry";
-        tDoc["time"] = data.timestamp;
-        tDoc["pos"] = data.pos;
-        tDoc["meas"] = data.meas;
-        tDoc["target"] = data.target;
-        tDoc["lag"] = data.lag;
-        tDoc["vel"] = data.vel;
-        tDoc["p_acc"] = data.p_acc;
-        tDoc["p_dist"] = data.p_dist;
-      }
-      msg = "";
-      serializeJson(tDoc, msg);
-      webserver::broadcastWebSocket(msg);
-    }
-  }
-}
+// Injected telemetry provider (set before init())
+static TelemetryProvider *telemetryProvider = nullptr;
 
 // =================================================================================
 // 1. Trajectory Planner (S-Curve)
@@ -180,7 +150,8 @@ public:
 // =================================================================================
 class PIDController {
 public:
-  float Kp = 8.0f;  // Increased to 8.0 for Servo-Like stiffness
+  float Kp =
+      3.0f; // Reduced to 3.0 to prevent vibration/binding at high voltage
   float Ki = 0.05f; // Increased to 0.05 for fast equalization
   float integrator = 0;
   float maxInteg = 2000.0f; // Max Integral windup (steps/sec correction)
@@ -189,6 +160,8 @@ public:
 
   float compute(float refPos, float measPos, float dt) {
     float error = refPos - measPos;
+    if (abs(error) < 1.5f)
+      error = 0.0f; // Deadband to stop hunting
 
     // Integral
     integrator += error * dt * Ki * 1000.0f; // Scale factor
@@ -238,6 +211,7 @@ public:
 // Main Task
 // =================================================================================
 void MotionTask(void *pvParameters) {
+  esp_task_wdt_delete(NULL); // Stop monitoring this task
   MotionCommand cmd;
   const uint32_t controlInterval = 1000;
   const uint32_t teleInterval = 100000;
@@ -267,10 +241,7 @@ void MotionTask(void *pvParameters) {
     if (xQueueReceive(motionQueue, &cmd, portMAX_DELAY) == pdPASS) {
       running = true;
       tmc::enable();
-
-      // Disable watchdog for this task while moving to prevent jitter.
-      // 1ms vTaskDelay is too long and causes audible "steps" in the timing.
-      esp_task_wdt_delete(NULL);
+      vTaskDelay(20 / portTICK_PERIOD_MS); // Let rails stabilize before move
 
       // Update config
       uSteps = (float)microsteps.toInt();
@@ -282,7 +253,6 @@ void MotionTask(void *pvParameters) {
 
       // Reset Components
       planner.reset(globalPos, target, cmd.maxSpeed, cmd.acceleration);
-      pid.reset();
       String stopReason = "Completed";
 
       // Reset timestamps to avoid huge dt
@@ -319,9 +289,9 @@ void MotionTask(void *pvParameters) {
           // E. Checks
           float dist = abs(target - measPos); // Check against REAL position
 
-          // Completion
-          if (dist < 5.0f && abs(commandVel) < 50.0f &&
-              abs(planner.currentVel) < 10.0f) {
+          // Completion (Relaxed slightly for stability)
+          if (dist < 5.0f && abs(commandVel) < 100.0f &&
+              abs(planner.currentVel) < 20.0f) {
             running = false;
             stopReason = "Target Reached";
           }
@@ -338,6 +308,9 @@ void MotionTask(void *pvParameters) {
             tmc::disable();
             stopReason = "E-STOP (SW1)";
           }
+
+          // Allow some time for IDLE task to prevent Task WDT reset
+          vTaskDelay(0);
         }
 
         // -------------------------------------------------------
@@ -353,67 +326,74 @@ void MotionTask(void *pvParameters) {
         // -------------------------------------------------------
         // 3. Telemetry (10Hz)
         // -------------------------------------------------------
+
         if (now - lastTelemetryTime >= teleInterval) {
-          float dt = (now - lastTelemetryTime) / 1000000.0f;
-          lastTelemetryTime = now;
           long currCounts = encoder::getTotalCounts();
-          float mVel =
-              (float)(currCounts - lastTelePos) * counts_to_steps * -1.0f / dt;
+          float dt_s = (now - lastTelemetryTime) / 1000000.0f;
+          lastTelemetryTime = now;
+          float mVel = (float)(currCounts - lastTelePos) * counts_to_steps *
+                       -1.0f / dt_s;
           lastTelePos = currCounts;
 
-          TelemetryData tData;
-          tData.type = TELEMETRY_UPDATE;
-          tData.timestamp = now;
-          tData.pos = (long)globalPos;
-          tData.meas = (long)((float)currCounts * counts_to_steps * -1.0f);
-          tData.target = (long)planner.currentPos;
-          tData.lag = (int)(planner.currentPos -
-                            ((float)currCounts * counts_to_steps * -1.0f));
-          tData.vel = (int)planner.currentVel;
-          tData.p_acc = (int)planner.currentAcc;
-          tData.p_dist = (int)(planner.targetPos - planner.currentPos);
+          // VBus Check (Only 10Hz)
+          float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
+          float vbus = (vbus_mv / 1000.0f) / DIV_RATIO;
+          if (vbus < 9.0f) {
+            running = false;
+            stopReason = "Brownout Fault";
+            tmc::disable();
+          }
 
-          // Non-blocking send (overwrite if full)
-          if (telemetryEnabled) {
-            xQueueOverwrite(telemetryQueue, &tData);
+          if (telemetryProvider != nullptr) {
+            TelemetryData tData;
+            tData.type = TELEMETRY_UPDATE;
+            tData.timestamp = now;
+            tData.pos = (long)globalPos;
+            tData.meas = (long)((float)currCounts * counts_to_steps * -1.0f);
+            tData.target = (long)planner.currentPos;
+            tData.lag = (int)(planner.currentPos -
+                              ((float)currCounts * counts_to_steps * -1.0f));
+            tData.vel = (int)planner.currentVel;
+            tData.p_acc = (int)planner.currentAcc;
+            tData.p_dist = (int)(planner.targetPos - planner.currentPos);
+            telemetryProvider->sendTelemetry(tData);
           }
         }
       }
 
       // Clean exit
-      tmc::moveAtVelocity(0);
-
-      TelemetryData stopData;
-      stopData.type = TELEMETRY_STOP;
-      stopData.pos = (long)globalPos;
-      strncpy(stopData.stopReason, stopReason.c_str(),
-              sizeof(stopData.stopReason));
-      stopData.stopReason[sizeof(stopData.stopReason) - 1] = '\0';
-
-      // Send stop message to TelemetryTask to handle the WebSocket broadcast
-      // This prevents the high-priority core 1 task from blocking on network
-      // logic
-      xQueueOverwrite(telemetryQueue, &stopData);
+      vTaskDelay(
+          100 /
+          portTICK_PERIOD_MS); // Give a moment for the UART and stabilizing
+      if (telemetryProvider != nullptr) {
+        telemetryProvider->sendStop(stopReason.c_str(), (long)globalPos);
+      }
 
       running = false;
-
-      // Re-enable watchdog for this task now that motion is done.
-      esp_task_wdt_add(NULL);
+      // NOTE: No esp_task_wdt_add() here — adding a task that was never
+      // registered causes a panic.  The task is safe while blocking on the
+      // queue.
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
 }
 
+void setTelemetryProvider(TelemetryProvider *provider) {
+  telemetryProvider = provider;
+  if (provider)
+    provider->init();
+}
+
 void init() {
   motionQueue = xQueueCreate(10, sizeof(MotionCommand));
-  telemetryQueue = xQueueCreate(1, sizeof(TelemetryData));
 
-  // Motion task on Core 1 (Dedicated for pulses)
+  // Power Management: Reduce idle current to 10% to prevent brownout/heat.
+  // Set run current to 80% for safer operation at higher speeds.
+  tmc::setRunCurrent(80);
+
+  // Motion task on Core 1 — dedicated for timing-critical pulse generation.
   xTaskCreatePinnedToCore(MotionTask, "MotionTask", 8192, NULL, 20,
                           &motionTaskHandle, 1);
-
-  // Telemetry task on Core 0 (Higher priority than WebServer/Encoder)
-  xTaskCreatePinnedToCore(TelemetryTask, "TeleTask", 4096, NULL, 10, NULL, 0);
 }
 
 bool addCommand(long distance, float acceleration, float maxSpeed,
@@ -423,7 +403,5 @@ bool addCommand(long distance, float acceleration, float maxSpeed,
 }
 
 bool isRunning() { return running; }
-
-void setTelemetryEnabled(bool enabled) { telemetryEnabled = enabled; }
 
 } // namespace motion

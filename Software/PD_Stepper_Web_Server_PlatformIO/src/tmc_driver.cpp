@@ -25,6 +25,13 @@ void init(int rx_pin, int tx_pin) {
 void setRunCurrent(int percent) { stepper_driver.setRunCurrent(percent); }
 
 /**
+ * @brief Set the hold current in percent of maximum current.
+ *
+ * @param percent
+ */
+void setHoldCurrent(int percent) { stepper_driver.setHoldCurrent(percent); }
+
+/**
  * @brief Enable automatic current scaling.
  *
  */
@@ -37,6 +44,12 @@ void enableAutomaticCurrentScaling() {
  *
  */
 void enableStealthChop() { stepper_driver.enableStealthChop(); }
+
+/**
+ * @brief Disable stealth chop.
+ *
+ */
+void disableStealthChop() { stepper_driver.disableStealthChop(); }
 
 /**
  * @brief Set the cool step duration threshold in ms.

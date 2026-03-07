@@ -5,6 +5,7 @@
 #include "motion_control.h"
 #include "tmc_driver.h"
 #include <ArduinoJson.h>
+#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -46,7 +47,10 @@ static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
 static int webServerCore = 1;
 
-void broadcastWebSocket(const String &message) { ws.textAll(message); }
+void broadcastWebSocket(const String &message) {
+  ws.textAll(message);
+  USBSerial.flush();
+}
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
                AwsEventType type, void *arg, uint8_t *data, size_t len) {
@@ -61,27 +65,6 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         info->opcode == WS_TEXT) {
       data[len] = 0;
       USBSerial.printf("WS Data received: %s\n", (char *)data);
-
-      JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, data, len);
-      if (!error) {
-        if (doc["cmd"].is<const char *>() && doc["cmd"] == "move") {
-          long dist = doc["distance"] | 0;
-          float accel = doc["accel"] | 1000.0f;
-          float speed = doc["speed"] | 5000.0f;
-          bool isAbs = doc["abs"] | false;
-          USBSerial.printf(
-              "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
-              isAbs ? "Absolute" : "Relative", dist, accel, speed);
-          motion::addCommand(dist, accel, speed, isAbs);
-        } else if (doc["cmd"].is<const char *>() && doc["cmd"] == "telemetry") {
-          bool enabled = doc["enabled"] | true;
-          motion::setTelemetryEnabled(enabled);
-          USBSerial.printf("Telemetry %s\n", enabled ? "Enabled" : "Disabled");
-        }
-      } else {
-        USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());
-      }
     }
   }
 }
@@ -144,18 +127,13 @@ String readEncoderPos() {
   return String(encoder::getTotalCounts());
 }
 
-String readTMCStatus() {
-  if (tmc::hardwareDisabled()) {
-    return ("Hardware Disabled");
-  }
-  return tmc::getStatusString();
-}
+String readTMCStatus() { return String(tmc::getStatusString()); }
 
 String readStallStatus() { return String(tmc::getStallGuardResult()); }
 
 void initWebServer(int core) {
   webServerCore = core;
-  USBSerial.printf("Initializing web server on core %d\\n", core);
+  USBSerial.printf("Initializing web server on core %d\n", core);
 
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
@@ -198,8 +176,7 @@ void initWebServer(int core) {
 
   // Endpoint to trigger network-task command (Net Cmd)
   server.on("/netcmd", HTTP_POST, [](AsyncWebServerRequest *request) {
-    USBSerial.printf("Webserver netcmd running on core %d\\n",
-                     xPortGetCoreID());
+    USBSerial.printf("Webserver netcmd running on core %d\n", xPortGetCoreID());
     USBSerial.println("Net Cmd received");
     request->send(200, "text/plain", "ok");
 
@@ -240,12 +217,10 @@ void initWebServer(int core) {
     if (request->hasParam("setvoltage", true)) {
       inputMessage = request->getParam("setvoltage", true)->value();
       setVoltage = inputMessage;
-      tmc::moveAtVelocity(0);
     }
     if (request->hasParam("microsteps", true)) {
       inputMessage = request->getParam("microsteps", true)->value();
       microsteps = inputMessage;
-      tmc::moveAtVelocity(0);
     }
     if (request->hasParam("current", true)) {
       inputMessage = request->getParam("current", true)->value();
@@ -266,7 +241,17 @@ void initWebServer(int core) {
 
 void beginWebServer() {
   server.begin();
-  USBSerial.printf("Web server started on core %d\\n", xPortGetCoreID());
+  USBSerial.printf("Web server started on core %d\n", xPortGetCoreID());
+
+  // Periodically cleanup disconnected clients to prevent memory leaks
+  xTaskCreatePinnedToCore(
+      [](void *p) {
+        for (;;) {
+          ws.cleanupClients();
+          vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+      },
+      "ws_cleanup", 2048, NULL, 1, NULL, webServerCore);
 }
 
 } // namespace webserver

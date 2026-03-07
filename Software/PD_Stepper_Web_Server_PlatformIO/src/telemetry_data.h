@@ -1,6 +1,8 @@
 #ifndef TELEMETRY_DATA_H
 #define TELEMETRY_DATA_H
 
+#include <Arduino.h>
+
 enum TelemetryType { TELEMETRY_UPDATE, TELEMETRY_STOP };
 
 struct TelemetryData {

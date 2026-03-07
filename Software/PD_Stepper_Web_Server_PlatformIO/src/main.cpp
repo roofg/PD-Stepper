@@ -2,13 +2,20 @@
 #include "index_html.h"
 #include "motion_control.h"
 #include "tmc_driver.h"
+#include "usb_telemetry_provider.h"
 #include "web_server.h"
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
+
 
 Preferences preferences;
+
+// Telemetry provider (USB binary — swappable via TelemetryProvider interface)
+static UsbTelemetryProvider usbTelemetry;
 
 // forward declarations (needed because we're compiling as C++ source)
 void configureSettings();
@@ -127,6 +134,7 @@ String processor_REMOVED_SEE_WEB_SERVER_CPP(const String &var) {
 
 // Arduino framwork setup defaultly runs on core 1
 void setup() {
+  esp_task_wdt_delete(NULL); // Stop monitoring loopTask
   // PD Trigger Setup
   pinMode(PG, INPUT);
   pinMode(CFG1, OUTPUT);
@@ -147,7 +155,7 @@ void setup() {
 
   // TMC pins
   pinMode(MS1, OUTPUT);
-  pinMode(MS1, OUTPUT);
+  pinMode(MS2, OUTPUT);
   pinMode(TMC_EN, OUTPUT);
   pinMode(DIAG, INPUT);
   digitalWrite(TMC_EN, LOW);
@@ -163,18 +171,18 @@ void setup() {
   readSettings(); // get saved values from EEPROM
 
   tmc::init(TMC_RX, TMC_TX);
-  tmc::setRunCurrent(100); // 100% current for high acceleration
+  tmc::setRunCurrent(80); // 80% current is safer for 12kHz moves
   tmc::enableAutomaticCurrentScaling();
-  tmc::enableStealthChop();
+  tmc::enableStealthChop(); // StealthChop is smoother for low/mid speeds
   tmc::setCoolStepDurationThreshold(5000);
   tmc::disable();
 
   configureSettings(); // use saved settings
 
   // Set up USB Serial for monitoring with pio
-  USBSerial.begin(115200); // Baud rate often ignored for native USB
-  delay(2000);             // Give some time for the USB serial to initialize
-  USBSerial.println("SerialUSB ready!");
+  USBSerial.begin(921600); // Must match StepperClientUSB.py --baud
+  delay(500);              // Short stabilization time
+  USBSerial.println("\r\n[SERIAL] Ready");
   USBSerial.flush();
 
   // Reset reason and boot counter
@@ -231,106 +239,72 @@ void setup() {
   delay(200);
   digitalWrite(LED1, LOW);
   // Initialize motion control system
+  // Inject telemetry transport — swap to &wifiTelemetry to switch providers.
+  motion::setTelemetryProvider(&usbTelemetry);
   motion::init();
 
   USBSerial.println("Setup complete");
 }
 
-// Arduino framwork main loop defaultly runs on core 1
+void processSerialCommands() {
+  static char serialBuffer[512];
+  static int bufIndex = 0;
+
+  while (USBSerial.available() > 0) {
+    char c = USBSerial.read();
+    if (c == '\n' || c == '\r') {
+      if (bufIndex > 0) {
+        serialBuffer[bufIndex] = '\0';
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, serialBuffer);
+
+        if (!error) {
+          if (doc["cmd"].is<const char *>() && doc["cmd"] == "move") {
+            long dist = doc["distance"] | 0;
+            float accel = doc["accel"] | 1000.0f;
+            float speed = doc["speed"] | 5000.0f;
+            bool isAbs = doc["abs"] | false;
+            USBSerial.printf(
+                "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
+                isAbs ? "Absolute" : "Relative", dist, accel, speed);
+            motion::addCommand(dist, accel, speed, isAbs);
+          } else if (doc["cmd"].is<const char *>() &&
+                     doc["cmd"] == "telemetry") {
+            bool enabled = doc["enabled"] | false;
+            USBSerial.printf("Telemetry Command: %s\n", enabled ? "ON" : "OFF");
+          }
+        } else {
+          USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());
+        }
+        bufIndex = 0;
+      }
+    } else {
+      if (bufIndex < sizeof(serialBuffer) - 1) {
+        serialBuffer[bufIndex++] = c;
+      }
+    }
+  }
+}
+
 void loop() {
+  processSerialCommands();
 
-  // digitalWrite(LED1, HIGH);
-  // delay(1000);
-  // digitalWrite(LED1, LOW);
-  // delay(1000);
-  // USBSerial.printf("Main loop running on core %d\n", xPortGetCoreID());
+  static uint32_t lastPrintTime = 0;
+  if (millis() - lastPrintTime >= 1000) {
+    lastPrintTime = millis();
+    // VBus sampling (safe to do at 1Hz on Core 1)
+    float vbus_mv = (float)analogReadMilliVolts(4);    // VBUS pin
+    VBusVoltage = (vbus_mv / 1000.0f) / 0.1189427313f; // DIV_RATIO
+    PGState = digitalRead(15);                         // PG pin
 
-  //   if (speedUpdatePending) {
-  //     set_speed = pendingSpeed;
-  //     tmc::moveAtVelocity(set_speed * (microsteps.toInt()));
-  //     speedUpdatePending = false;
-  //   }
+    // Diagnostic output
+    USBSerial.printf("[SYSTEM] VBus: %.2fV, PG: %s, Core: %d\r\n", VBusVoltage,
+                     PGState ? "FAIL" : "OK", xPortGetCoreID());
+    USBSerial.flush();
+  }
 
-  //   if (posUpdatePending) {
-  //     tmc::moveAtVelocity(0);
-  //     if (pendingPosMode == 1)      setPoint -= 25600;
-  //     else if (pendingPosMode == 2) setPoint -= 12800;
-  //     else if (pendingPosMode == 3) setPoint += 12800;
-  //     else if (pendingPosMode == 4) setPoint += 25600;
-  //     posUpdatePending = false;
-  //   }
-
-  //   if (millis() - lastEncRead >= mainFreq){
-  //     lastEncRead = millis();
-  //     digitalWrite(LED2, digitalRead(DIAG));
-  //     PGState = digitalRead(PG);
-  //     if (PGState == LOW and enabled1 == "enabled" and enabledState == 0){
-  //       tmc::enable();
-  //       enabledState = 1;
-  //     } else if ((PGState == HIGH or enabled1 == "disabled") and enabledState
-  //     == 1){
-  //       tmc::disable();
-  //       enabledState = 0;
-  //     }
-  //   }
-
-  //   int delaySpeed = 4500;
-  //   int microSteps = microsteps.toInt();
-  //   int delaySpeedAdjusted = delaySpeed/microSteps;
-  //   if (setPoint > CurrentPosition){
-  //     if (micros()-lastStep > delaySpeedAdjusted){
-  //       digitalWrite(DIR, LOW);
-  //       digitalWrite(STEP, state);
-  //       state = !state;
-  //       CurrentPosition = CurrentPosition + (256/microSteps);
-  //       lastStep = micros();
-  //     }
-  //   } else if (setPoint < CurrentPosition){
-  //     if (micros()-lastStep > delaySpeedAdjusted){
-  //       digitalWrite(DIR, HIGH);
-  //       digitalWrite(STEP, state);
-  //       state = !state;
-  //       CurrentPosition = CurrentPosition - (256/microSteps);
-  //       lastStep = micros();
-  //     }
-  //   }
-
-  //   if ((millis() - lastDebounceTime) > debounceDelay) {
-  //     lastDebounceTime = millis();
-  //     bool currentIncButtonState = digitalRead(SW3);
-  //     bool currentDecButtonState = digitalRead(SW1);
-  //     bool currentResetButtonState = digitalRead(SW2);
-
-  //     if (currentIncButtonState != incButtonState) {
-  //       incButtonState = currentIncButtonState;
-  //       if (incButtonState == LOW) {
-  //         buttonSpeed = buttonSpeed + 30;
-  //         if (buttonSpeed > 330){
-  //           buttonSpeed = 330;
-  //         }
-  //         tmc::moveAtVelocity(buttonSpeed*(microsteps.toInt()));
-  //       }
-  //     }
-
-  //     if (currentDecButtonState != decButtonState) {
-  //       decButtonState = currentDecButtonState;
-  //       if (decButtonState == LOW) {
-  //         buttonSpeed = buttonSpeed -30;
-  //         if (buttonSpeed < -330){
-  //           buttonSpeed = -330;
-  //         }
-  //         tmc::moveAtVelocity(buttonSpeed*(microsteps.toInt()));
-  //       }
-  //     }
-
-  //     if (currentResetButtonState != resetButtonState) {
-  //       resetButtonState = currentResetButtonState;
-  //       if (resetButtonState == LOW) {
-  //         buttonSpeed = 0;
-  //         tmc::moveAtVelocity(0);
-  //       }
-  //     }
-  //   }
+  // Explicitly yield to reset the loopTask watchdog
+  vTaskDelay(10 / portTICK_PERIOD_MS);
 }
 
 // Encoder logic moved to encoder::read() in encoder.cpp
@@ -380,17 +354,25 @@ void readSettings() {
   if (enabled1 == "") {
     preferences.end();
     enabled1 = "enabled";
-    setVoltage = "12";
+    setVoltage = "20";
     microsteps = "32";
-    current = "30";
+    current = "50";
     stallThreshold = "10";
     standstillMode = "NORMAL";
     writeSettings();
   } else {
     USBSerial.println("Settings found in EEPROM");
     setVoltage = preferences.getString("voltage", "");
+    if (setVoltage == "12") {
+      setVoltage = "20"; // Migration to higher PD voltage for test
+      preferences.putString("voltage", "20");
+    }
     microsteps = preferences.getString("microsteps", "");
     current = preferences.getString("current", "");
+    if (current == "80" || current == "30") {
+      current = "50"; // Safer middle ground for high speed
+      preferences.putString("current", "50");
+    }
     stallThreshold = preferences.getString("stallThreshold", "");
     standstillMode = preferences.getString("standstillMode", "");
     preferences.end();

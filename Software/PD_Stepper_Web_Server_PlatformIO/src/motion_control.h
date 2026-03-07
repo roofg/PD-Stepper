@@ -1,5 +1,6 @@
 #pragma once
 
+#include "telemetry_provider.h"
 #include <Arduino.h>
 
 namespace motion {
@@ -10,6 +11,12 @@ struct MotionCommand {
   float maxSpeed;     // Max velocity in steps/s
   bool absolute;      // True if distance is an absolute target
 };
+
+/**
+ * @brief Set the telemetry provider before calling init().
+ *        The provider must remain valid for the lifetime of the motion task.
+ */
+void setTelemetryProvider(TelemetryProvider *provider);
 
 /**
  * @brief Initialize the motion control system, including the command queue and
@@ -28,6 +35,5 @@ bool addCommand(long distance, float acceleration, float maxSpeed,
  * @brief Get the current status of the motion system.
  */
 bool isRunning();
-void setTelemetryEnabled(bool enabled);
 
 } // namespace motion
