@@ -267,6 +267,11 @@ static void PlannerTask(void *) {
                     float nextDist     = fabsf(nextTarget - target);
                     float maxSafeEntry = sqrtf(2.0f * nextCmd.acceleration * nextDist);
                     if (junctionVel > maxSafeEntry) junctionVel = maxSafeEntry;
+                    // Clamp to what the current move can actually achieve starting from
+                    // rest.  If this move is too short to reach junctionVel the isComplete()
+                    // velocity check will never fire at targetPos, causing a large overshoot.
+                    float maxAchievable = sqrtf(2.0f * cmd.acceleration * fabsf(target - startPos));
+                    if (junctionVel > maxAchievable) junctionVel = maxAchievable;
                 }
                 // else: junctionVel stays 0 — full deceleration required for reversal
             }
@@ -364,6 +369,18 @@ static void PlannerTask(void *) {
                         float nextTarget = nextCmd.absolute
                                            ? (float)nextCmd.distance
                                            : (target + (float)nextCmd.distance);
+
+                        // Clamp nextJunctionVel by what nextCmd can achieve entering at the
+                        // current chain velocity.  Use planner.currentPos as the true start
+                        // (resetChained preserves it), not `target` which may be a few steps
+                        // behind due to the crossing-detection delay.
+                        {
+                            float enterVel       = fabsf(planner.currentVel);
+                            float nextMoveDist   = fabsf(nextTarget - planner.currentPos);
+                            float maxNextAchiev  = sqrtf(enterVel * enterVel
+                                                         + 2.0f * nextCmd.acceleration * nextMoveDist);
+                            if (nextJunctionVel > maxNextAchiev) nextJunctionVel = maxNextAchiev;
+                        }
 
                         Serial1.printf("DBG:CHAIN_TRANSITION from=%.0f to=%.0f vel=%.0f\n",
                                        target, nextTarget, planner.currentVel);
