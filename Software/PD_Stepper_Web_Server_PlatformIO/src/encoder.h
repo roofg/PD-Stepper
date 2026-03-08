@@ -12,9 +12,9 @@ void init();
 /**
  * @brief Launch the independent encoder readout task.
  * @param priority FreeRTOS priority (default 2, higher than motion if needed)
- * @param interval_ms Readout frequency (default 1ms)
+ * @param interval_ms Readout frequency (default 5ms = 200 Hz)
  */
-void startTask(int priority = 2, int interval_ms = 1);
+void startTask(int priority = 5, int interval_ms = 5);
 
 /**
  * @brief Read the current position from the AS5600 encoder (Internal/Legacy).

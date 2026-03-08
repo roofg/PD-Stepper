@@ -84,9 +84,11 @@ void moveAtVelocity(int v) {
 }
 
 void step() {
-  digitalWrite(STEP_PIN, HIGH);
-  delayMicroseconds(2); // Minimum pulse width for TMC2209
-  digitalWrite(STEP_PIN, LOW);
+    // Legacy single-step function. New architecture uses stepgen:: ISR.
+    // Kept for compatibility; not called during normal operation.
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(2);
+    digitalWrite(STEP_PIN, LOW);
 }
 
 void setDirection(bool forward) {

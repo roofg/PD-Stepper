@@ -6,39 +6,39 @@
 namespace motion {
 
 struct MotionCommand {
-  long distance;      // Relative distance or Absolute target in steps
-  float acceleration; // Max acceleration in steps/s^2
-  float maxSpeed;     // Max velocity in steps/s
-  bool absolute;      // True if distance is an absolute target
+    long  distance;      // Relative distance or absolute target in microsteps
+    float acceleration;  // Max acceleration  (microsteps/sec²)
+    float maxSpeed;      // Max velocity       (microsteps/sec)
+    bool  absolute;      // true → distance is an absolute position
 };
 
-/**
- * @brief Set the telemetry provider before calling init().
- *        The provider must remain valid for the lifetime of the motion task.
- */
+// Inject the telemetry provider before calling init().
 void setTelemetryProvider(TelemetryProvider *provider);
 
-/**
- * @brief Set the PID values for the motion controller.
- */
-void setPID(float kp, float ki);
+// Set PD feedback gains (replaces the former setPID / PI controller).
+//   Kp — proportional gain on phase error
+//   Kd — derivative  gain on phase error rate
+void setPD(float kp, float kd);
 
-/**
- * @brief Initialize the motion control system, including the command queue and
- * Core 1 task.
- */
+// Set the phase-lead gain Kv. The reference position is advanced by
+// Kv * target_velocity to pre-compensate encoder lag at speed.
+// Start at 0 and increase in small steps during tuning.
+void setPhaseLeadGain(float kv);
+
+// Set microsteps per full step. Call this whenever the TMC2209 microstep
+// setting changes so the motion controller can update its encoder scale.
+// Thread-safe (stores to a volatile int32_t read by both tasks).
+void setMicrosteps(int microsteps);
+
+// Initialize the motion system: step generator ISR, planner task (Core 0),
+// control task (Core 1). Call once from setup() after encoder::init().
 void init();
 
-/**
- * @brief Add a motion command to the queue.
- * @return true if added successfully, false if queue is full.
- */
+// Enqueue a motion command. Returns false if the queue is full.
 bool addCommand(long distance, float acceleration, float maxSpeed,
                 bool absolute = false);
 
-/**
- * @brief Get the current status of the motion system.
- */
+// Returns true while a move is in progress.
 bool isRunning();
 
 } // namespace motion

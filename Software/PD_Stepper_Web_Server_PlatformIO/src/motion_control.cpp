@@ -1,413 +1,391 @@
 #include "motion_control.h"
 #include "encoder.h"
+#include "pd_controller.h"
+#include "step_generator.h"
 #include "telemetry_provider.h"
 #include "tmc_driver.h"
+#include "trajectory_buffer.h"
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-#define VBUS_PIN 4
-#define DIV_RATIO 0.1189427313f
-
-extern String microsteps;
+#define STEP_PIN   5
+#define DIR_PIN    6
+#define SW1_PIN    35
+#define VBUS_PIN   4
+#define DIV_RATIO  0.1189427313f
 
 namespace motion {
 
-static QueueHandle_t motionQueue = NULL;
-static TaskHandle_t motionTaskHandle = NULL;
-static bool running = false;
-static float globalPos = 0; // Shared state for telemetry
-static volatile float globalVelCorrection = 0;
+// ---------------------------------------------------------------------------
+// Inter-task shared state
+// All are 32-bit aligned (or bool = 8-bit atomic on ESP32). No mutex needed
+// for SPSC access patterns described in comments.
+// ---------------------------------------------------------------------------
 
-// Injected telemetry provider (set before init())
-static TelemetryProvider *telemetryProvider = nullptr;
+static volatile bool    s_running        = false; // set by planner, cleared by planner/control
+static volatile float   g_meas_pos       = 0.0f;  // written: control; read: planner
+static volatile float   g_target_pos     = 0.0f;  // written: planner; read: control (telemetry)
+static volatile bool    g_fault_lag      = false;  // set: control; cleared: planner on move start
+static volatile bool    g_fault_estop    = false;  // set: control; cleared: planner on move start
+static volatile bool    g_fault_brownout = false;  // set: planner; cleared: planner on move start
+static volatile uint16_t g_sg_result     = 0;      // written: planner (UART); read: control (tele)
+// Microsteps per full step — written by setMicrosteps() from main task; read
+// by both planner and control tasks. int32_t ensures atomic 32-bit read on LX7.
+static volatile int32_t g_uSteps_setting = 32;
 
-// =================================================================================
-// 1. Trajectory Planner (S-Curve)
-// =================================================================================
+// PD gains — written via setPD() / setPhaseLeadGain() from main task at rest
+static float g_kp = 3.0f;
+static float g_kd = 0.1f;
+static float g_kv = 0.0f;
+
+static QueueHandle_t     s_motionQueue   = nullptr;
+static TaskHandle_t      s_plannerHandle = nullptr;
+static TaskHandle_t      s_controlHandle = nullptr;
+static TelemetryProvider *s_telemetry    = nullptr;
+
+// ---------------------------------------------------------------------------
+// Trajectory Planner (S-curve with jerk limiting)
+// Generates a smooth reference trajectory (pos/vel/acc) from a MotionCommand.
+// ---------------------------------------------------------------------------
 class TrajectoryPlanner {
 public:
-  float currentPos = 0;
-  float currentVel = 0;
-  float currentAcc = 0;
-  float targetPos = 0;
-  float maxV = 0;
-  float maxA = 0;
-  float jerk = 0;
+    float currentPos = 0;
+    float currentVel = 0;
+    float currentAcc = 0;
+    float targetPos  = 0;
+    float maxV = 0;
+    float maxA = 0;
+    float jerk = 0;
 
-  void reset(float startPos, float trg, float mv, float ma) {
-    currentPos = startPos;
-    targetPos = trg;
-    maxV = abs(mv);
-    maxA = abs(ma);
-    jerk = maxA * 100.0f; // Increase Jerk for snappier response (reduce lag)
-    currentVel = 0;
-    currentAcc = 0;
-  }
-
-  void update(float dt) {
-    float distToTarget = abs(targetPos - currentPos);
-    float stoppingDist = (currentVel * currentVel) / (2.0f * maxA);
-    bool forward = (targetPos > currentPos);
-
-    // Dynamic Approach Speed (Prevent Overshoot)
-    // When close (500 steps), limit max speed proportionally
-    // This effectively lowers 'maxV' as we get closer, preventing
-    // the planner from accelerating to full speed after an overshoot
-    // turn-around.
-    float approachVel = maxV;
-    if (distToTarget < 500.0f) {
-      approachVel = distToTarget * 10.0f; // 10 steps -> 100 vel (slow!)
-      if (approachVel < 50.0f)
-        approachVel = 50.0f; // Min crawl speed
-      if (approachVel > maxV)
-        approachVel = maxV;
+    void reset(float startPos, float trg, float mv, float ma) {
+        currentPos = startPos;
+        targetPos  = trg;
+        maxV = fabsf(mv);
+        maxA = fabsf(ma);
+        jerk = maxA * 100.0f; // snap acceleration for responsiveness
+        currentVel = 0;
+        currentAcc = 0;
     }
 
-    float targetAcc = 0;
+    void update(float dt) {
+        float distToTarget = fabsf(targetPos - currentPos);
+        float stoppingDist = (currentVel * currentVel) / (2.0f * maxA);
+        bool  forward      = (targetPos > currentPos);
 
-    // 1. At Target (deadzone)
-    if (distToTarget < 0.5f && abs(currentVel) < 10.0f) {
-      targetAcc = -currentVel * 10.0f; // Damp to absolute zero
-      if (abs(targetAcc) > maxA) {
-        targetAcc = (targetAcc > 0) ? maxA : -maxA;
-      }
-    }
-    // 2. Braking Needed?
-    // Check if we overlap the stopping distance OR if we exceed approach limit
-    else if (distToTarget < stoppingDist + (abs(currentVel) * 0.02f) ||
-             abs(currentVel) > approachVel) {
-      // BRAKE: Accel must oppose Velocity
-      // Even if velocity is tiny, we must brake if we are over the limit?
-      // No, if vel is tiny, braking just stops us.
-      if (abs(currentVel) > 1.0f) {
-        targetAcc = (currentVel > 0) ? -maxA : maxA;
-      } else {
-        // If stopped but need to brake? (e.g. overshot and stopped)
-        // We need to Reverse. "Braking" logic only works if moving.
-        // If stopped, we fall through to Accel logic.
-        // But wait, if abs(currentVel) <= approachVel, we go to step 3.
-        // Since approachVel >= 50, if vel < 1, we go to step 3.
-        // So this block is ONLY for active braking.
-        targetAcc = (currentVel > 0) ? -maxA : maxA;
-      }
-    }
-    // 3. Accelerate to Target
-    else {
-      // We are safe to accelerate, BUT respects the approachVel limit
-      // implicitly because if we accelerate past approachVel, the next cycle
-      // will Brake. However, to be smoother, we shouldn't accel if at
-      // approachVel.
-      if (abs(currentVel) < approachVel) {
-        targetAcc = forward ? maxA : -maxA;
-      } else {
-        targetAcc = 0; // Cruise at approach speed
-      }
-    }
-
-    // Apply Jerk Limit
-    if (currentAcc < targetAcc) {
-      currentAcc += jerk * dt;
-      if (currentAcc > targetAcc)
-        currentAcc = targetAcc;
-    } else if (currentAcc > targetAcc) {
-      currentAcc -= jerk * dt;
-      if (currentAcc < targetAcc)
-        currentAcc = targetAcc;
-    }
-
-    // Integration
-    currentVel += currentAcc * dt;
-
-    // Velocity Limits
-    if (currentVel > maxV) {
-      currentVel = maxV;
-      currentAcc = 0;
-    }
-    if (currentVel < -maxV) {
-      currentVel = -maxV;
-      currentAcc = 0;
-    }
-
-    currentPos += currentVel * dt;
-  }
-
-  // Recovery Mode for when the motor is pulled out of position
-  // Overrides the S-curve to gently pull back
-  void updateRecovery(float measuredPos, float dt) {
-    targetPos = measuredPos; // Reset target to where we are? No, we want to go
-                             // TO target.
-    // Actually, Planner should be "Reference Generator".
-    // If we are recovering, we might want to just update currentPos to measured
-    // and re-plan? For now, let's keep the planner pure. It generates the
-    // "Perfect Move".
-  }
-};
-
-// =================================================================================
-// 2. PID Controller (Velocity Correction)
-// =================================================================================
-static float g_kp = 3.0f;
-static float g_ki = 0.05f;
-
-class PIDController {
-public:
-  float integrator = 0;
-  float maxInteg = 2000.0f; // Max Integral windup (steps/sec correction)
-
-  void reset() { integrator = 0; }
-
-  float compute(float refPos, float measPos, float dt) {
-    float error = refPos - measPos;
-    if (abs(error) < 1.5f)
-      error = 0.0f; // Deadband to stop hunting
-
-    // Integral
-    integrator += error * dt * g_ki * 1000.0f; // Scale factor
-    if (integrator > maxInteg)
-      integrator = maxInteg;
-    if (integrator < -maxInteg)
-      integrator = -maxInteg;
-
-    float output = (error * g_kp) + integrator;
-
-    // Limit Output
-    // Don't let correction exceed 20% of max speed (safety)
-    // Hardcoded limit for now
-    if (output > 1000.0f)
-      output = 1000.0f;
-    if (output < -1000.0f)
-      output = -1000.0f;
-
-    return output;
-  }
-};
-
-// =================================================================================
-// 3. Step Generator (Pulse Output)
-// =================================================================================
-class StepGenerator {
-public:
-  uint32_t lastPulseTime = 0;
-
-  void update(float velocity, uint32_t now) {
-    if (abs(velocity) < 1.0f)
-      return;
-
-    uint32_t stepInterval = (uint32_t)(1000000.0f / abs(velocity));
-
-    if (now - lastPulseTime >= stepInterval) {
-      bool forward = (velocity > 0);
-      tmc::setDirection(forward);
-      tmc::step();
-      lastPulseTime = now;
-      globalPos += (forward ? 1.0f : -1.0f); // Update shared state
-    }
-  }
-};
-
-// =================================================================================
-// Main Task
-// =================================================================================
-void MotionTask(void *pvParameters) {
-  esp_task_wdt_delete(NULL); // Stop monitoring this task
-  MotionCommand cmd;
-  const uint32_t controlInterval = 1000;
-  const uint32_t teleInterval = 100000;
-
-  // Components
-  TrajectoryPlanner planner;
-  PIDController pid;
-  StepGenerator stepGen;
-
-  // Sync Hardware
-  float uSteps = (float)microsteps.toInt();
-  if (uSteps < 1)
-    uSteps = 32.0f;
-  float counts_to_steps = (200.0f * uSteps) / 4096.0f;
-
-  // Init State
-  long startCounts = encoder::getTotalCounts();
-  float startPos = (float)startCounts * counts_to_steps * -1.0f;
-  globalPos = startPos;
-  planner.currentPos = startPos;
-
-  uint32_t lastControlTime = micros();
-  uint32_t lastTelemetryTime = micros();
-  long lastTelePos = startCounts;
-
-  for (;;) {
-    if (xQueueReceive(motionQueue, &cmd, portMAX_DELAY) == pdPASS) {
-      running = true;
-      tmc::enable();
-      vTaskDelay(20 / portTICK_PERIOD_MS); // Let rails stabilize before move
-
-      // Update config
-      uSteps = (float)microsteps.toInt();
-      if (uSteps < 1)
-        uSteps = 32.0f;
-      counts_to_steps = (200.0f * uSteps) / 4096.0f;
-      float target = cmd.absolute ? (float)cmd.distance
-                                  : (globalPos + (float)cmd.distance);
-
-      // Reset Components
-      planner.reset(globalPos, target, cmd.maxSpeed, cmd.acceleration);
-      String stopReason = "Completed";
-
-      // Reset timestamps to avoid huge dt
-      lastControlTime = micros();
-      lastTelemetryTime = micros();
-      stepGen.lastPulseTime = micros();
-
-      while (running) {
-        uint32_t now = micros();
-
-        // -------------------------------------------------------
-        // 1. Control Loop (1kHz)
-        // -------------------------------------------------------
-        if (now - lastControlTime >= controlInterval) {
-          float dt = (now - lastControlTime) / 1000000.0f;
-          lastControlTime = now;
-
-          // A. Update Reference (Planner)
-          planner.update(dt);
-
-          // B. Read Feedback
-          long encCounts = encoder::getTotalCounts();
-          float measPos = (float)encCounts * counts_to_steps * -1.0f;
-
-          // C. PID Correction
-          // Error = Plan - Measured
-          // Note: planner.currentPos is the Ideal "S-Curve" position
-          float velCorrection = pid.compute(planner.currentPos, measPos, dt);
-          globalVelCorrection = velCorrection; // Share with pulse loop
-
-          // D. Output
-          float commandVel = planner.currentVel + velCorrection;
-
-          // E. Checks
-          float dist = abs(target - measPos); // Check against REAL position
-
-          // Completion (Relaxed slightly for stability)
-          if (dist < 5.0f && abs(commandVel) < 100.0f &&
-              abs(planner.currentVel) < 20.0f) {
-            running = false;
-            stopReason = "Target Reached";
-          }
-
-          // E-Stop (Lag > 200 steps)
-          if (abs(planner.currentPos - measPos) > (200.0f * uSteps * 1.5f)) {
-            running = false;
-            stopReason = "Lag Fault";
-          }
-
-          // SW1 Stop
-          if (digitalRead(35) == LOW) {
-            running = false;
-            tmc::disable();
-            stopReason = "E-STOP (SW1)";
-          }
-
-          // Allow some time for IDLE task to prevent Task WDT reset
-          vTaskDelay(0);
+        // Scale approach velocity linearly with distance, with a low floor so
+        // the motor can fully decelerate to rest in the last few steps without
+        // oscillating. A 50 steps/sec floor at 1 step would cause re-acceleration
+        // which prevents settling — keep the floor at 5 steps/sec instead.
+        float approachVel = maxV;
+        if (distToTarget < 500.0f) {
+            approachVel = distToTarget * 10.0f;
+            if (approachVel < 5.0f)   approachVel = 5.0f;
+            if (approachVel > maxV)   approachVel = maxV;
         }
 
-        // -------------------------------------------------------
-        // 2. Pulse Generation (Fastest)
-        // -------------------------------------------------------
-        // Use the planner's velocity + pre-calculated PID correction
-        float outputVel = planner.currentVel + globalVelCorrection;
-
-        stepGen.update(outputVel, now);
-
-        // NO YIELD in the high speed loop. Core 1 is for pulses only.
-
-        // -------------------------------------------------------
-        // 3. Telemetry (10Hz)
-        // -------------------------------------------------------
-
-        if (now - lastTelemetryTime >= teleInterval) {
-          long currCounts = encoder::getTotalCounts();
-          float dt_s = (now - lastTelemetryTime) / 1000000.0f;
-          lastTelemetryTime = now;
-          float mVel = (float)(currCounts - lastTelePos) * counts_to_steps *
-                       -1.0f / dt_s;
-          lastTelePos = currCounts;
-
-          // VBus Check (Only 10Hz)
-          float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
-          float vbus = (vbus_mv / 1000.0f) / DIV_RATIO;
-          if (vbus < 9.0f) {
-            running = false;
-            stopReason = "Brownout Fault";
-            tmc::disable();
-          }
-
-          if (telemetryProvider != nullptr) {
-            TelemetryData tData;
-            tData.type = TELEMETRY_UPDATE;
-            tData.timestamp = now;
-            tData.pos = (long)globalPos;
-            tData.meas = (long)((float)currCounts * counts_to_steps * -1.0f);
-            tData.target = (long)planner.currentPos;
-            tData.lag = (int)(planner.currentPos -
-                              ((float)currCounts * counts_to_steps * -1.0f));
-            tData.vel = (int)planner.currentVel;
-            tData.p_acc = (int)planner.currentAcc;
-            tData.p_dist = (int)(planner.targetPos - planner.currentPos);
-            tData.sg_result = (uint16_t)tmc::getStallGuardResult();
-            telemetryProvider->sendTelemetry(tData);
-          }
+        float targetAcc = 0;
+        if (distToTarget < 2.0f && fabsf(currentVel) < 20.0f) {
+            // Close enough to target: damp velocity to zero
+            targetAcc = -currentVel * 10.0f;
+            if (fabsf(targetAcc) > maxA)
+                targetAcc = (targetAcc > 0) ? maxA : -maxA;
+        } else if (distToTarget < stoppingDist + fabsf(currentVel) * 0.02f ||
+                   fabsf(currentVel) > approachVel) {
+            // Braking needed
+            targetAcc = (currentVel > 0) ? -maxA : maxA;
+        } else {
+            // Accelerate toward target
+            if (fabsf(currentVel) < approachVel)
+                targetAcc = forward ? maxA : -maxA;
+            // else cruise at approachVel
         }
-      }
 
-      // Clean exit
-      vTaskDelay(
-          100 /
-          portTICK_PERIOD_MS); // Give a moment for the UART and stabilizing
-      if (telemetryProvider != nullptr) {
-        telemetryProvider->sendStop(stopReason.c_str(), (long)globalPos);
-      }
+        // Apply jerk limit (S-curve)
+        if (currentAcc < targetAcc) {
+            currentAcc += jerk * dt;
+            if (currentAcc > targetAcc) currentAcc = targetAcc;
+        } else if (currentAcc > targetAcc) {
+            currentAcc -= jerk * dt;
+            if (currentAcc < targetAcc) currentAcc = targetAcc;
+        }
 
-      running = false;
-      // NOTE: No esp_task_wdt_add() here — adding a task that was never
-      // registered causes a panic.  The task is safe while blocking on the
-      // queue.
+        currentVel += currentAcc * dt;
+        if (currentVel >  maxV) { currentVel =  maxV; currentAcc = 0; }
+        if (currentVel < -maxV) { currentVel = -maxV; currentAcc = 0; }
+
+        currentPos += currentVel * dt;
     }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
+
+    bool isComplete() const {
+        return fabsf(targetPos - currentPos) < 2.0f && fabsf(currentVel) < 20.0f;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Planner Task — Core 0, priority 5, runs at 500 Hz during a move
+//
+// Responsibilities:
+//   • Receive MotionCommand from queue
+//   • Generate trajectory via TrajectoryPlanner and push to trajbuf
+//   • Check VBus (brownout) and StallGuard (200 ms intervals) — uses UART/ADC,
+//     safe on Core 0, must NOT be called from the Control Task
+//   • Detect move completion; handle all TMC enable/disable calls
+// ---------------------------------------------------------------------------
+static void PlannerTask(void *) {
+    esp_task_wdt_delete(NULL);
+
+    MotionCommand cmd;
+    TrajectoryPlanner planner;
+    float uSteps           = 32.0f;
+    float counts_to_steps  = (200.0f * uSteps) / 4096.0f;
+
+    for (;;) {
+        // Block until a command arrives
+        if (xQueueReceive(s_motionQueue, &cmd, portMAX_DELAY) != pdPASS) continue;
+
+        // ---- Initialise move ----
+        uSteps          = (float)g_uSteps_setting;
+        if (uSteps < 1) uSteps = 32.0f;
+        counts_to_steps = (200.0f * uSteps) / 4096.0f;
+
+        tmc::enable();
+        vTaskDelay(pdMS_TO_TICKS(20)); // wait for rails to stabilise
+
+        float startPos = g_meas_pos;  // use encoder as ground truth
+        float target   = cmd.absolute
+                         ? (float)cmd.distance
+                         : (startPos + (float)cmd.distance);
+        g_target_pos   = target;
+
+        planner.reset(startPos, target, cmd.maxSpeed, cmd.acceleration);
+        trajbuf::clear();
+
+        // Reset faults and start motion
+        g_fault_lag = g_fault_estop = g_fault_brownout = false;
+        s_running   = true;
+
+        String   stopReason    = "Completed";
+        uint32_t lastVBusMs    = millis();
+        uint32_t lastSGMs      = millis();
+
+        TickType_t xLastWake   = xTaskGetTickCount();
+
+        while (s_running) {
+            // --- 500 Hz planner update ---
+            uint32_t nowUs = micros();
+            planner.update(0.002f); // fixed 2 ms timestep matches loop period
+
+            TrajectoryPoint pt;
+            pt.pos = planner.currentPos;
+            pt.vel = planner.currentVel;
+            pt.acc = planner.currentAcc;
+            trajbuf::push(pt);
+
+            // --- VBus brownout check (200 ms) ---
+            if (millis() - lastVBusMs >= 200) {
+                lastVBusMs = millis();
+                float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
+                float vbus    = (vbus_mv / 1000.0f) / DIV_RATIO;
+                if (vbus < 9.0f) {
+                    g_fault_brownout = true;
+                }
+            }
+
+            // --- StallGuard check (200 ms) — UART is safe on Core 0 ---
+            if (millis() - lastSGMs >= 200) {
+                lastSGMs  = millis();
+                g_sg_result = (uint16_t)tmc::getStallGuardResult();
+            }
+
+            // --- Aggregate faults → pick stop reason ---
+            if (g_fault_lag)      { stopReason = "Lag Fault";     s_running = false; }
+            if (g_fault_estop)    { stopReason = "E-STOP (SW1)";  s_running = false; }
+            if (g_fault_brownout) { stopReason = "Brownout Fault"; s_running = false; }
+
+            // --- Completion: planner finished AND encoder near target ---
+            if (!s_running) break; // fault already set
+            if (planner.isComplete() && fabsf(g_meas_pos - target) < 30.0f) {
+                stopReason = "Completed";
+                s_running  = false;
+            }
+
+            // Wait for next 2 ms period (500 Hz)
+            vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
+        }
+
+        // ---- Clean exit ----
+        stepgen::halt();
+        vTaskDelay(pdMS_TO_TICKS(100)); // settle before disabling driver
+        tmc::disable();
+
+        if (s_telemetry) {
+            s_telemetry->sendStop(stopReason.c_str(), (long)g_meas_pos);
+        }
+    }
 }
 
+// ---------------------------------------------------------------------------
+// Control Task — Core 1, priority 19, runs at 1 kHz continuously
+//
+// Responsibilities:
+//   • Read encoder position (via volatile counter — no I2C/UART)
+//   • Pop latest trajectory reference from trajbuf
+//   • Compute PD + feedforward velocity command
+//   • Drive step generator
+//   • Detect lag fault and E-stop (sets shared flags, halts steps immediately)
+//   • Emit binary telemetry at 10 Hz via TelemetryProvider
+//
+// IMPORTANT: This task MUST NOT call tmc:: UART functions, encoder::read(),
+// or any blocking API. Only encoder::getTotalCounts() (reads a volatile) is
+// permitted.
+// ---------------------------------------------------------------------------
+static void ControlTask(void *) {
+    esp_task_wdt_delete(NULL);
+
+    PDController pd;
+    TrajectoryPoint ref = {0.0f, 0.0f, 0.0f};
+
+    float uSteps          = 32.0f;
+    float counts_to_steps = (200.0f * uSteps) / 4096.0f;
+
+    uint32_t lastTeleMs   = millis();
+    long     lastTeleEnc  = 0;
+
+    TickType_t xLastWake  = xTaskGetTickCount();
+
+    for (;;) {
+        vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(1)); // 1 kHz
+
+        // --- Encoder read (pure volatile — no I2C here) ---
+        uSteps          = (float)g_uSteps_setting;
+        if (uSteps < 1) uSteps = 32.0f;
+        counts_to_steps = (200.0f * uSteps) / 4096.0f;
+
+        long  encCounts = encoder::getTotalCounts();
+        float measPos   = (float)encCounts * counts_to_steps;
+        g_meas_pos      = measPos; // share with Planner Task
+
+        if (!s_running) {
+            stepgen::setVelocity(0.0f);
+            pd.reset();
+            continue;
+        }
+
+        // --- Refresh PD gains (written infrequently by main task at rest) ---
+        pd.setGains(g_kp, g_kd);
+        pd.setPhaseLeadGain(g_kv);
+
+        // --- Consume latest trajectory point (reuse last if buffer empty) ---
+        TrajectoryPoint newRef;
+        if (trajbuf::pop(newRef)) {
+            ref = newRef;
+        }
+
+        // --- PD + feedforward velocity command ---
+        float correction  = pd.compute(ref.pos, ref.vel, measPos, 0.001f);
+        float velocity_cmd = ref.vel + correction;
+        stepgen::setVelocity(velocity_cmd);
+
+        // --- E-Stop (SW1 button — active LOW) ---
+        if (digitalRead(SW1_PIN) == LOW) {
+            g_fault_estop = true;
+            stepgen::halt();
+        }
+
+        // --- Lag fault: encoder position has drifted too far from reference ---
+        float phase_error = fabsf(ref.pos - measPos);
+        if (phase_error > 200.0f * uSteps * 1.5f) {
+            g_fault_lag = true;
+            stepgen::halt();
+        }
+
+        // --- Telemetry at 10 Hz ---
+        if (millis() - lastTeleMs >= 100) {
+            float dt_s    = (millis() - lastTeleMs) / 1000.0f;
+            lastTeleMs    = millis();
+            float mVel    = (float)(encCounts - lastTeleEnc)
+                            * counts_to_steps / dt_s;
+            lastTeleEnc   = encCounts;
+
+            if (s_telemetry) {
+                TelemetryData d;
+                d.type      = TELEMETRY_UPDATE;
+                d.timestamp = micros();
+                d.pos       = stepgen::getStepCount();
+                d.meas      = (long)measPos;
+                d.target    = (long)ref.pos;
+                d.lag       = (int)(ref.pos - measPos);
+                d.vel       = (int)ref.vel;
+                d.p_acc     = (int)ref.acc;
+                d.p_dist    = (int)(g_target_pos - measPos);
+                d.sg_result = g_sg_result; // written by Planner Task (safe)
+                s_telemetry->sendTelemetry(d);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 void setTelemetryProvider(TelemetryProvider *provider) {
-  telemetryProvider = provider;
-  if (provider)
-    provider->init();
+    s_telemetry = provider;
+    if (provider) provider->init();
+}
+
+void setPD(float kp, float kd) {
+    g_kp = kp;
+    g_kd = kd;
+}
+
+void setPhaseLeadGain(float kv) {
+    g_kv = kv;
+}
+
+void setMicrosteps(int ms) {
+    if (ms < 1) ms = 1;
+    g_uSteps_setting = (int32_t)ms;
 }
 
 void init() {
-  motionQueue = xQueueCreate(10, sizeof(MotionCommand));
+    s_motionQueue = xQueueCreate(10, sizeof(MotionCommand));
 
-  // Power Management: Reduce idle current to 10% to prevent brownout/heat.
-  // Set run current to 80% for safer operation at higher speeds.
-  tmc::setRunCurrent(80);
+    // Initialise step generator ISR (timer starts immediately but produces no
+    // pulses until setVelocity() is called with a non-zero value).
+    stepgen::init(STEP_PIN, DIR_PIN);
 
-  // Motion task on Core 1 — dedicated for timing-critical pulse generation.
-  xTaskCreatePinnedToCore(MotionTask, "MotionTask", 8192, NULL, 20,
-                          &motionTaskHandle, 1);
+    tmc::setRunCurrent(80); // 80 % run current for safe high-speed moves
+
+    // Planner Task: Core 0, lower priority — can use UART/ADC safely
+    xTaskCreatePinnedToCore(PlannerTask, "PlannerTask", 8192, nullptr,  5,
+                            &s_plannerHandle, 0);
+
+    // Control Task: Core 1, high priority — timing-critical real-time loop
+    xTaskCreatePinnedToCore(ControlTask, "ControlTask", 4096, nullptr, 19,
+                            &s_controlHandle, 1);
 }
 
-bool addCommand(long distance, float acceleration, float maxSpeed,
-                bool absolute) {
-  MotionCommand cmd = {distance, acceleration, maxSpeed, absolute};
-  return xQueueSend(motionQueue, &cmd, 0) == pdPASS;
+bool addCommand(long distance, float acceleration, float maxSpeed, bool absolute) {
+    // Soft limits — prevent commands from exceeding hardware capabilities.
+    // Max step rate: stepgen ISR at 40 kHz (one pulse per tick).
+    // Max acceleration: practical limit to avoid immediate lag faults at rest.
+    constexpr float MAX_SPEED_STEPS  = 38000.0f; // slightly below ISR rate
+    constexpr float MAX_ACCEL_STEPS  = 200000.0f;
+    constexpr float MIN_SPEED_STEPS  = 10.0f;
+    constexpr float MIN_ACCEL_STEPS  = 10.0f;
+
+    if (maxSpeed    > MAX_SPEED_STEPS) maxSpeed    = MAX_SPEED_STEPS;
+    if (maxSpeed    < MIN_SPEED_STEPS) maxSpeed    = MIN_SPEED_STEPS;
+    if (acceleration > MAX_ACCEL_STEPS) acceleration = MAX_ACCEL_STEPS;
+    if (acceleration < MIN_ACCEL_STEPS) acceleration = MIN_ACCEL_STEPS;
+
+    MotionCommand cmd = {distance, acceleration, maxSpeed, absolute};
+    return xQueueSend(s_motionQueue, &cmd, 0) == pdPASS;
 }
 
-bool isRunning() { return running; }
-
-void setPID(float kp, float ki) {
-  g_kp = kp;
-  g_ki = ki;
-}
+bool isRunning() { return s_running; }
 
 } // namespace motion

@@ -1,9 +1,7 @@
 #include "encoder.h"
-#include "index_html.h"
 #include "motion_control.h"
 #include "tmc_driver.h"
 #include "usb_telemetry_provider.h"
-#include "web_server.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -50,86 +48,21 @@ void writeSettings();
 #define AUX1 14
 #define AUX2 13
 
-// Global variables
-int set_speed = 0;
-bool PGState = 0; // state of the power good signal from PD sink IC
-bool enabledState = 0;
-bool state = 0; // step state
-
-// AS5600 Hall Effect Encoder
-// (Logic moved to encoder.cpp)
-unsigned long lastEncRead = 0;
-
-int mainFreq =
-    10; // Scheduled frequency = 100hz (for slower tasks, encoder reading etc)
-
-// button read and debounce
-bool incButtonState = HIGH;
-bool decButtonState = HIGH;
-bool resetButtonState = HIGH;
-unsigned long lastDebounceTime = 0;
-unsigned long debounceDelay = 50;
-
-int buttonSpeed = 0;
-
-// Voltage reading and calc
+// Runtime state
+bool PGState = 0;
 float VBusVoltage = 0;
-float VREF = 3.3;
-const float DIV_RATIO = 0.1189427313; // 20k&2.7K Voltage Divider
+const float DIV_RATIO = 0.1189427313; // 20k/2.7k voltage divider
 
-// Values received from websever save command
-String enabled1 = "enabled";
-String setVoltage = "12";
-String microsteps = "32";
-String current = "30";
+// Persistent settings (loaded from Preferences on boot, saved by "save" command)
+String enabled1       = "enabled";
+String setVoltage     = "20";
+String microsteps     = "32";
+String current        = "50";
 String stallThreshold = "10";
 String standstillMode = "NORMAL";
 
-// variable updated in callback
-volatile bool speedUpdatePending = false;
-volatile int pendingSpeed = 0;
-volatile bool posUpdatePending = false;
-volatile int pendingPosMode = 0;
-
-// Varaiables for position control (open loop)
-signed long setPoint = 0;
-signed long CurrentPosition = 0;
-unsigned long lastStep = 0;
-
-// Note: Helper functions (readPGState, readVoltage, etc.) have been moved to
-// web_server.cpp
-
-// updates placeholder varibles in the HTML code (used by web_server.cpp)
-String processor_REMOVED_SEE_WEB_SERVER_CPP(const String &var) {
-  if (var == "enabled1") {
-    if (enabled1 == "enabled") {
-      return "checked";
-    } else {
-      return "";
-    }
-  }
-
-  if (var == "microsteps") {
-    return String(microsteps);
-  }
-
-  if (var == "voltage") {
-    return String(setVoltage);
-  }
-
-  if (var == "current") {
-    return String(current);
-  }
-
-  if (var == "stall_threshold") {
-    return String(stallThreshold);
-  }
-
-  if (var == "standstill_mode") {
-    return String(standstillMode);
-  }
-  return String("");
-}
+// Note: button debounce and open-loop position control variables have been
+// removed — the new motion architecture handles all motion via serial commands.
 
 // Arduino framwork setup defaultly runs on core 1
 void setup() {
@@ -162,7 +95,7 @@ void setup() {
 
   // AS5600 Hall Encoder Setup
   encoder::init();
-  encoder::startTask(5, 10); // 100Hz at Priority 5
+  encoder::startTask(5, 5); // 200 Hz (5 ms interval), priority 5
 
   // ADC Setup
   analogSetPinAttenuation(VBUS, ADC_11db);
@@ -231,8 +164,7 @@ void setup() {
   }
 
   // Initialize and start web server on core 0 to leave Core 1 for motion
-  webserver::initWebServer(0);
-  webserver::beginWebServer();
+  // Web server removed — all commanding is via USB Serial JSON.
 
   digitalWrite(LED1, HIGH);
   delay(200);
@@ -241,6 +173,7 @@ void setup() {
   // Inject telemetry transport — swap to &wifiTelemetry to switch providers.
   motion::setTelemetryProvider(&usbTelemetry);
   motion::init();
+  motion::setMicrosteps(microsteps.toInt());
 
   USBSerial.println("Setup complete");
 }
@@ -258,7 +191,9 @@ void processSerialCommands() {
         DeserializationError error = deserializeJson(doc, serialBuffer);
 
         if (!error) {
-          if (doc["cmd"].is<const char *>() && doc["cmd"] == "move") {
+          const char *cmd = doc["cmd"] | "";
+
+          if (strcmp(cmd, "move") == 0) {
             long dist = doc["distance"] | 0;
             float accel = doc["accel"] | 1000.0f;
             float speed = doc["speed"] | 5000.0f;
@@ -267,15 +202,73 @@ void processSerialCommands() {
                 "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
                 isAbs ? "Absolute" : "Relative", dist, accel, speed);
             motion::addCommand(dist, accel, speed, isAbs);
-          } else if (doc["cmd"].is<const char *>() &&
-                     doc["cmd"] == "telemetry") {
+
+          } else if (strcmp(cmd, "set_phase_lead") == 0) {
+            float kv = doc["kv"] | 0.0f;
+            motion::setPhaseLeadGain(kv);
+            USBSerial.printf("Set phase lead gain Kv: %.4f\n", kv);
+
+          } else if (strcmp(cmd, "set_pd") == 0) {
+            float kp = doc["kp"] | 3.0f;
+            float kd = doc["kd"] | 0.1f;
+            motion::setPD(kp, kd);
+            USBSerial.printf("Set PD - Kp: %.4f, Kd: %.4f\n", kp, kd);
+
+          } else if (strcmp(cmd, "set_pid") == 0) {
+            // Legacy alias: map ki → kd for backwards compat with scripts
+            float kp = doc["kp"] | 3.0f;
+            float kd = doc["kd"] | doc["ki"] | 0.1f;
+            motion::setPD(kp, kd);
+            USBSerial.printf("Set PD (legacy set_pid) - Kp: %.4f, Kd: %.4f\n", kp, kd);
+
+          } else if (strcmp(cmd, "set_voltage") == 0) {
+            const char *v = doc["value"] | "20";
+            setVoltage = String(v);
+            configureSettings();
+            USBSerial.printf("Set voltage: %s V\n", v);
+
+          } else if (strcmp(cmd, "set_current") == 0) {
+            int c = doc["value"] | 50;
+            current = String(c);
+            tmc::setRunCurrent(c);
+            USBSerial.printf("Set current: %d%%\n", c);
+
+          } else if (strcmp(cmd, "set_microsteps") == 0) {
+            int ms = doc["value"] | 32;
+            microsteps = String(ms);
+            tmc::setMicrostepsPerStep(ms);
+            motion::setMicrosteps(ms);
+            USBSerial.printf("Set microsteps: %d\n", ms);
+
+          } else if (strcmp(cmd, "set_stall_threshold") == 0) {
+            int th = doc["value"] | 10;
+            stallThreshold = String(th);
+            tmc::setStallGuardThreshold(th);
+            USBSerial.printf("Set stall threshold: %d\n", th);
+
+          } else if (strcmp(cmd, "set_standstill_mode") == 0) {
+            const char *mode = doc["value"] | "NORMAL";
+            standstillMode = String(mode);
+            configureSettings();
+            USBSerial.printf("Set standstill mode: %s\n", mode);
+
+          } else if (strcmp(cmd, "save") == 0) {
+            writeSettings();
+            USBSerial.println("Settings saved to flash");
+
+          } else if (strcmp(cmd, "get_settings") == 0) {
+            USBSerial.printf(
+                "{\"voltage\":\"%s\",\"current\":\"%s\",\"microsteps\":\"%s\","
+                "\"stall_threshold\":\"%s\",\"standstill_mode\":\"%s\"}\n",
+                setVoltage.c_str(), current.c_str(), microsteps.c_str(),
+                stallThreshold.c_str(), standstillMode.c_str());
+
+          } else if (strcmp(cmd, "telemetry") == 0) {
             bool enabled = doc["enabled"] | false;
             USBSerial.printf("Telemetry Command: %s\n", enabled ? "ON" : "OFF");
-          } else if (doc["cmd"].is<const char *>() && doc["cmd"] == "set_pid") {
-            float kp = doc["kp"] | 3.0f;
-            float ki = doc["ki"] | 0.05f;
-            motion::setPID(kp, ki);
-            USBSerial.printf("Set PID - Kp: %.4f, Ki: %.4f\n", kp, ki);
+
+          } else {
+            USBSerial.printf("Unknown command: %s\n", cmd);
           }
         } else {
           USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());
