@@ -171,13 +171,22 @@ static void PlannerTask(void *) {
         String   stopReason    = "Completed";
         uint32_t lastVBusMs    = millis();
         uint32_t lastSGMs      = millis();
+        uint32_t prevPlanUs    = micros(); // track real elapsed time for planner dt
 
         TickType_t xLastWake   = xTaskGetTickCount();
 
         while (s_running) {
-            // --- 500 Hz planner update ---
+            // --- 500 Hz planner update with real dt ---
+            // vTaskDelayUntil targets 2 ms, but jitter is possible. Using
+            // micros() delta gives the planner the actual elapsed time,
+            // preventing position drift when the scheduler is late.
+            // Cap at 5 ms to avoid instability on a severely delayed tick.
             uint32_t nowUs = micros();
-            planner.update(0.002f); // fixed 2 ms timestep matches loop period
+            float dt = (float)(nowUs - prevPlanUs) * 1e-6f;
+            if (dt > 0.005f) dt = 0.005f;
+            if (dt < 0.0001f) dt = 0.001f; // guard against zero on first tick
+            prevPlanUs = nowUs;
+            planner.update(dt);
 
             TrajectoryPoint pt;
             pt.pos = planner.currentPos;
