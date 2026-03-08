@@ -14,11 +14,13 @@ static hw_timer_t *s_timer = nullptr;
 static uint32_t s_step_mask = 0;
 static uint32_t s_dir_mask  = 0;
 
-// Accumulator and increment (Q16.16). phase_inc is always >= 0; direction is
-// encoded separately so the ISR avoids a branch on sign.
+// Accumulator and signed increment (Q16.16).
+// Direction is encoded in the sign of s_phase_inc: positive = forward,
+// negative = reverse. This makes setVelocity() a single 32-bit write,
+// which is atomic on Xtensa LX7. Eliminates the race where the ISR
+// could fire between separate writes of s_forward and s_phase_inc.
 static volatile int32_t s_phase_acc = 0;
-static volatile int32_t s_phase_inc = 0;  // Q16.16, ≥ 0
-static volatile bool    s_forward   = true;
+static volatile int32_t s_phase_inc = 0;  // Q16.16, signed (+ fwd / - rev)
 
 // Pulse state: STEP pin was driven HIGH last tick → drive LOW this tick first.
 static volatile bool    s_step_high  = false;
@@ -36,13 +38,17 @@ void IRAM_ATTR timerISR() {
         s_step_high = false;
     }
 
-    // Phase 2: accumulate phase; generate a new pulse when we overflow Q16_ONE
-    s_phase_acc += s_phase_inc;
+    // Phase 2: accumulate phase; generate a new pulse when we overflow Q16_ONE.
+    // Read s_phase_inc once into a local to keep direction/magnitude consistent
+    // for this tick (prevents reading a partially-updated value across the tick).
+    int32_t inc = s_phase_inc;
+    bool fwd = (inc >= 0);
+    s_phase_acc += fwd ? inc : -inc;
     if (s_phase_acc >= Q16_ONE) {
         s_phase_acc -= Q16_ONE;
 
         // Set direction before the STEP rising edge
-        if (s_forward) {
+        if (fwd) {
             REG_WRITE(GPIO_OUT_W1TS_REG, s_dir_mask);
         } else {
             REG_WRITE(GPIO_OUT_W1TC_REG, s_dir_mask);
@@ -53,7 +59,7 @@ void IRAM_ATTR timerISR() {
         s_step_high = true;
 
         // Maintain signed step counter
-        if (s_forward) {
+        if (fwd) {
             s_step_count++;
         } else {
             s_step_count--;
@@ -80,18 +86,15 @@ void init(int step_pin, int dir_pin) {
 
 void setVelocity(float velocity_steps_per_sec) {
     if (velocity_steps_per_sec > 0.0f) {
-        s_forward = true;
         int32_t inc = (int32_t)(velocity_steps_per_sec * (float)Q16_ONE
                                 / (float)ISR_FREQ_HZ);
-        // Cap at one step per tick (= ISR_FREQ_HZ steps/sec)
         if (inc > Q16_ONE) inc = Q16_ONE;
-        s_phase_inc = inc;
+        s_phase_inc = inc;   // positive = forward (single atomic write)
     } else if (velocity_steps_per_sec < 0.0f) {
-        s_forward = false;
         int32_t inc = (int32_t)(-velocity_steps_per_sec * (float)Q16_ONE
                                  / (float)ISR_FREQ_HZ);
         if (inc > Q16_ONE) inc = Q16_ONE;
-        s_phase_inc = inc;
+        s_phase_inc = -inc;  // negative = reverse (single atomic write)
     } else {
         s_phase_inc = 0;
     }
