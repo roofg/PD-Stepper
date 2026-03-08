@@ -35,10 +35,12 @@ static volatile uint16_t g_sg_result     = 0;      // written: planner (UART); r
 // by both planner and control tasks. int32_t ensures atomic 32-bit read on LX7.
 static volatile int32_t g_uSteps_setting = 32;
 
-// PD gains — written via setPD() / setPhaseLeadGain() from main task at rest
-static float g_kp = 3.0f;
-static float g_kd = 0.1f;
-static float g_kv = 0.0f;
+// PD gains — written via setPD() / setPhaseLeadGain() from main task (Core 0);
+// read by ControlTask (Core 1). volatile ensures the compiler does not cache
+// the value in a register across the core boundary on Xtensa LX7.
+static volatile float g_kp = 3.0f;
+static volatile float g_kd = 0.1f;
+static volatile float g_kv = 0.0f;
 
 static QueueHandle_t     s_motionQueue   = nullptr;
 static TaskHandle_t      s_plannerHandle = nullptr;
