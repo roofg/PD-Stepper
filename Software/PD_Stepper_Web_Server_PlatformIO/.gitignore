@@ -6,3 +6,5 @@
 .vscode/*
 .continue/*
 .cache/*
+__pycache__/
+*.pyc

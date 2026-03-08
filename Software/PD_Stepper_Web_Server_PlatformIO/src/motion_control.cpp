@@ -67,37 +67,64 @@ public:
     float maxV = 0;
     float maxA = 0;
     float jerk = 0;
+    // exitVelocity: speed magnitude at move end (0=full stop, >0=chain handoff).
+    // moveForward: set once at reset time — direction of this move segment.
+    // signedExitVel() returns the correctly-signed target velocity for damping/completion.
+    float exitVelocity = 0;
+    bool  moveForward  = true;
 
-    void reset(float startPos, float trg, float mv, float ma) {
-        currentPos = startPos;
-        targetPos  = trg;
-        maxV = fabsf(mv);
-        maxA = fabsf(ma);
-        jerk = maxA * 100.0f; // snap acceleration for responsiveness
-        currentVel = 0;
-        currentAcc = 0;
+    float signedExitVel() const { return moveForward ? exitVelocity : -exitVelocity; }
+
+    void reset(float startPos, float trg, float mv, float ma, float exitVel = 0.0f) {
+        currentPos    = startPos;
+        targetPos     = trg;
+        maxV          = fabsf(mv);
+        maxA          = fabsf(ma);
+        jerk          = maxA * 100.0f; // snap acceleration for responsiveness
+        currentVel    = 0;
+        currentAcc    = 0;
+        moveForward   = (trg > startPos);
+        exitVelocity  = fabsf(exitVel);
+        if (exitVelocity > maxV) exitVelocity = maxV; // can't exit faster than we travel
+    }
+
+    // Chain variant: preserves currentVel/currentAcc for seamless velocity handoff.
+    // Call this instead of reset() when transitioning to the next chained move.
+    void resetChained(float trg, float mv, float ma, float exitVel = 0.0f) {
+        targetPos    = trg;
+        maxV         = fabsf(mv);
+        maxA         = fabsf(ma);
+        jerk         = maxA * 100.0f;
+        moveForward  = (trg > currentPos);
+        exitVelocity = fabsf(exitVel);
+        if (exitVelocity > maxV) exitVelocity = maxV;
+        // currentPos, currentVel, currentAcc intentionally preserved
     }
 
     void update(float dt) {
         float distToTarget = fabsf(targetPos - currentPos);
-        float stoppingDist = (currentVel * currentVel) / (2.0f * maxA);
         bool  forward      = (targetPos > currentPos);
 
-        // Scale approach velocity linearly with distance, with a low floor so
-        // the motor can fully decelerate to rest in the last few steps without
-        // oscillating. A 50 steps/sec floor at 1 step would cause re-acceleration
-        // which prevents settling — keep the floor at 5 steps/sec instead.
+        // Stopping distance to reach exitVelocity (not necessarily 0).
+        // stoppingDist = (v^2 - exitVel^2) / (2 * maxA)
+        float excessVelSq  = currentVel * currentVel - exitVelocity * exitVelocity;
+        float stoppingDist = (excessVelSq > 0.0f) ? (excessVelSq / (2.0f * maxA)) : 0.0f;
+
+        // Scale approach velocity linearly with distance near target.
+        // Floor at exitVelocity so we don't overshoot the chain handoff point.
         float approachVel = maxV;
         if (distToTarget < 500.0f) {
-            approachVel = distToTarget * 10.0f;
-            if (approachVel < 5.0f)   approachVel = 5.0f;
-            if (approachVel > maxV)   approachVel = maxV;
+            approachVel = distToTarget * 10.0f + exitVelocity;
+            if (approachVel < exitVelocity + 5.0f) approachVel = exitVelocity + 5.0f;
+            if (approachVel > maxV)                approachVel = maxV;
         }
 
+        float sExitVel = signedExitVel(); // correctly-signed for this move's direction
+
         float targetAcc = 0;
-        if (distToTarget < 2.0f && fabsf(currentVel) < 20.0f) {
-            // Close enough to target: damp velocity to zero
-            targetAcc = -currentVel * 10.0f;
+        if (distToTarget < 2.0f && fabsf(currentVel - sExitVel) < 20.0f) {
+            // Close enough to target and near exit velocity: damp toward sExitVel
+            targetAcc = -(currentVel - sExitVel) * 10.0f;
             if (fabsf(targetAcc) > maxA)
                 targetAcc = (targetAcc > 0) ? maxA : -maxA;
         } else if (distToTarget < stoppingDist + fabsf(currentVel) * 0.02f ||
@@ -128,7 +155,8 @@ public:
     }
 
     bool isComplete() const {
-        return fabsf(targetPos - currentPos) < 2.0f && fabsf(currentVel) < 20.0f;
+        return fabsf(targetPos - currentPos) < 2.0f &&
+               fabsf(currentVel - signedExitVel()) < 20.0f;
     }
 };
 
@@ -185,7 +213,36 @@ static void PlannerTask(void *) {
                          : (startPos + (float)cmd.distance);
         g_target_pos   = target;
 
-        planner.reset(startPos, target, cmd.maxSpeed, cmd.acceleration);
+        // Peek at the next queued command (without dequeuing) to compute
+        // the junction velocity for this move. This must be done before reset()
+        // so the planner decelerates to the correct exit velocity.
+        float junctionVel = 0.0f;
+        if (cmd.chain) {
+            MotionCommand nextCmd;
+            if (xQueuePeek(s_motionQueue, &nextCmd, 0) == pdPASS) {
+                float nextTarget = nextCmd.absolute
+                                   ? (float)nextCmd.distance
+                                   : (target + (float)nextCmd.distance);
+                // Direction check: if next move is same direction, use junction velocity;
+                // if opposite direction, must decelerate to zero (can't reverse without stopping).
+                bool currForward = (target > startPos);
+                bool nextForward = (nextTarget > target);
+                if (currForward == nextForward) {
+                    junctionVel = fminf(cmd.maxSpeed, nextCmd.maxSpeed);
+                    // Clamp to the safe entry speed for the next segment:
+                    // motor must be able to decelerate from junctionVel to a stop
+                    // within nextDist. Without this, short segments overshoot.
+                    float nextDist     = fabsf(nextTarget - target);
+                    float maxSafeEntry = sqrtf(2.0f * nextCmd.acceleration * nextDist);
+                    if (junctionVel > maxSafeEntry) junctionVel = maxSafeEntry;
+                }
+                // else: junctionVel stays 0 — full deceleration required for reversal
+            }
+            // If queue is empty when we peek: default to junctionVel=0. The move will
+            // decelerate to stop normally. If a command arrives later, it starts fresh.
+        }
+
+        planner.reset(startPos, target, cmd.maxSpeed, cmd.acceleration, junctionVel);
         trajbuf::clear();
 
         // Reset faults and start motion
@@ -201,10 +258,6 @@ static void PlannerTask(void *) {
 
         while (s_running) {
             // --- 500 Hz planner update with real dt ---
-            // vTaskDelayUntil targets 2 ms, but jitter is possible. Using
-            // micros() delta gives the planner the actual elapsed time,
-            // preventing position drift when the scheduler is late.
-            // Cap at 5 ms to avoid instability on a severely delayed tick.
             uint32_t nowUs = micros();
             float dt = (float)(nowUs - prevPlanUs) * 1e-6f;
             if (dt > 0.005f) dt = 0.005f;
@@ -239,9 +292,60 @@ static void PlannerTask(void *) {
             if (g_fault_estop)    { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
             if (g_fault_brownout) { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
 
-            // --- Completion: planner finished AND encoder near target ---
             if (!s_running) break; // fault already set
+
+            // --- Completion check ---
             if (planner.isComplete() && fabsf(g_meas_pos - target) < 30.0f) {
+                if (cmd.chain) {
+                    // Try to dequeue the next command for a chained transition
+                    MotionCommand nextCmd;
+                    if (xQueueReceive(s_motionQueue, &nextCmd, 0) == pdPASS) {
+                        // Compute the junction velocity for the NEW move (after nextCmd)
+                        float nextJunctionVel = 0.0f;
+                        if (nextCmd.chain) {
+                            MotionCommand afterNext;
+                            if (xQueuePeek(s_motionQueue, &afterNext, 0) == pdPASS) {
+                                float nextTarget = nextCmd.absolute
+                                                   ? (float)nextCmd.distance
+                                                   : (target + (float)nextCmd.distance);
+                                float afterTarget = afterNext.absolute
+                                                    ? (float)afterNext.distance
+                                                    : (nextTarget + (float)afterNext.distance);
+                                bool nextForward  = (nextTarget > target);
+                                bool afterForward = (afterTarget > nextTarget);
+                                if (nextForward == afterForward) {
+                                    nextJunctionVel = fminf(nextCmd.maxSpeed, afterNext.maxSpeed);
+                                    float afterDist    = fabsf(afterTarget - nextTarget);
+                                    float maxSafeEntry = sqrtf(2.0f * afterNext.acceleration * afterDist);
+                                    if (nextJunctionVel > maxSafeEntry) nextJunctionVel = maxSafeEntry;
+                                }
+                            }
+                        }
+
+                        // Compute next move's absolute target from the CURRENT target (chain end point)
+                        float nextTarget = nextCmd.absolute
+                                           ? (float)nextCmd.distance
+                                           : (target + (float)nextCmd.distance);
+
+                        Serial1.printf("DBG:CHAIN_TRANSITION from=%.0f to=%.0f vel=%.0f\n",
+                                       target, nextTarget, planner.currentVel);
+
+                        target       = nextTarget;
+                        g_target_pos = target;
+                        cmd          = nextCmd;
+
+                        // resetChained() preserves currentVel/currentAcc — no velocity discontinuity
+                        planner.resetChained(target, cmd.maxSpeed, cmd.acceleration, nextJunctionVel);
+
+                        // Do NOT clear trajbuf — let it drain naturally to avoid starving ControlTask.
+                        // The new trajectory points will be pushed from the next planner tick onward.
+                        // s_running stays true, TMC stays enabled — chain is seamless.
+                        continue; // skip normal completion path
+                    }
+                    // Queue was empty by the time we tried to dequeue — fall through to normal stop
+                }
+
+                // Normal (unchained or last in chain) completion
                 strncpy(stopReason, "Completed", 31);
                 s_running  = false;
             }
@@ -250,9 +354,7 @@ static void PlannerTask(void *) {
             vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
         }
 
-        // ---- Clean exit ----
-        // Debug checkpoints: plain ASCII lines the Python parser ignores (not 0xAA-prefixed).
-        // These reveal exactly which step blocks or crashes on a timeout.
+        // ---- Clean exit (only reached at end of chain or on fault) ----
         Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason);
 
         stepgen::halt();
@@ -434,7 +536,7 @@ void init() {
                             &s_controlHandle, 1);
 }
 
-bool addCommand(long distance, float acceleration, float maxSpeed, bool absolute) {
+bool addCommand(long distance, float acceleration, float maxSpeed, bool absolute, bool chain) {
     // Soft limits — prevent commands from exceeding hardware capabilities.
     // Max step rate: stepgen ISR at 40 kHz (one pulse per tick).
     // Max acceleration: practical limit to avoid immediate lag faults at rest.
@@ -448,7 +550,7 @@ bool addCommand(long distance, float acceleration, float maxSpeed, bool absolute
     if (acceleration > MAX_ACCEL_STEPS) acceleration = MAX_ACCEL_STEPS;
     if (acceleration < MIN_ACCEL_STEPS) acceleration = MIN_ACCEL_STEPS;
 
-    MotionCommand cmd = {distance, acceleration, maxSpeed, absolute};
+    MotionCommand cmd = {distance, acceleration, maxSpeed, absolute, chain};
     return xQueueSend(s_motionQueue, &cmd, 0) == pdPASS;
 }
 

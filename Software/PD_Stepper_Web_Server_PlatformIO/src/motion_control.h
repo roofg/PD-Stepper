@@ -10,6 +10,7 @@ struct MotionCommand {
     float acceleration;  // Max acceleration  (microsteps/sec²)
     float maxSpeed;      // Max velocity       (microsteps/sec)
     bool  absolute;      // true → distance is an absolute position
+    bool  chain;         // true → do not stop/disable at move end; transition to next queued command
 };
 
 // Inject the telemetry provider before calling init().
@@ -40,8 +41,11 @@ void setMicrosteps(int microsteps);
 void init();
 
 // Enqueue a motion command. Returns false if the queue is full.
+// chain=true: do not stop/disable TMC after this move; smoothly transition
+// to the next queued command (same direction → velocity continuity;
+// opposite direction → zero-velocity handoff with no TMC disable cycle).
 bool addCommand(long distance, float acceleration, float maxSpeed,
-                bool absolute = false);
+                bool absolute = false, bool chain = false);
 
 // Returns true while a move is in progress.
 bool isRunning();

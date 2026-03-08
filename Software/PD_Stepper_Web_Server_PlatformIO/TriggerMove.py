@@ -2,9 +2,12 @@
 TriggerMove.py — Send a single move command to PD-Stepper via USB serial.
 
 Usage:
-    python TriggerMove.py [--port COM3] [--distance 3200] [--speed 12000] [--accel 9000] [--abs]
+    python TriggerMove.py [--port COM3] [--distance 3200] [--speed 12000] [--accel 9000] [--abs] [--chain]
 
 Defaults: COM3, 3200 steps (1 rev @ 16 microsteps), 12000 steps/sec, 9000 steps/sec²
+
+--chain: mark this move as chained (do not stop motor at end; next queued command continues).
+         Usually combined with subsequent commands sent before this one finishes.
 """
 
 import argparse
@@ -95,6 +98,7 @@ def main():
     parser.add_argument("--speed",    type=float, default=12000, help="Steps/sec (default: 12000)")
     parser.add_argument("--accel",    type=float, default=9000,  help="Steps/sec² (default: 9000)")
     parser.add_argument("--abs",      action="store_true",        help="Absolute move (default: relative)")
+    parser.add_argument("--chain",    action="store_true",        help="Mark move as chained (do not stop at end)")
     args = parser.parse_args()
 
     print(f"Connecting to {args.port} at 921600 baud...")
@@ -115,6 +119,7 @@ def main():
         "speed":    args.speed,
         "accel":    args.accel,
         "abs":      args.abs,
+        "chain":    args.chain,
     }
     print(f"Sending: {json.dumps(cmd)}\n")
     send_cmd(ser, cmd)

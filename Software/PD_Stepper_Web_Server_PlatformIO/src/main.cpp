@@ -175,10 +175,13 @@ void processSerialCommands() {
             float accel = doc["accel"] | 1000.0f;
             float speed = doc["speed"] | 5000.0f;
             bool isAbs = doc["abs"] | false;
+            bool chain = doc["chain"] | false;
             Serial1.printf(
-                "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
-                isAbs ? "Absolute" : "Relative", dist, accel, speed);
-            motion::addCommand(dist, accel, speed, isAbs);
+                "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f, Chain: %s\n",
+                isAbs ? "Absolute" : "Relative", dist, accel, speed, chain ? "yes" : "no");
+            if (!motion::addCommand(dist, accel, speed, isAbs, chain)) {
+              Serial1.println("ERR: motion queue full, command dropped");
+            }
 
           } else if (strcmp(cmd, "set_phase_lead") == 0) {
             float kv = doc["kv"] | 0.0f;
