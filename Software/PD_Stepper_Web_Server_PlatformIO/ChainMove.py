@@ -118,7 +118,24 @@ def parse_move(s: str):
         raise argparse.ArgumentTypeError(f"Invalid --move value '{s}': {e}")
 
 
+def _fix_negative_move_args(argv):
+    """Merge '--move -N:s:a' into '--move=-N:s:a' so argparse doesn't treat
+    the negative distance as an unknown flag."""
+    out, i = [], 0
+    while i < len(argv):
+        if argv[i] == "--move" and i + 1 < len(argv) \
+                and argv[i + 1].startswith("-") and ":" in argv[i + 1]:
+            out.append(f"--move={argv[i + 1]}")
+            i += 2
+        else:
+            out.append(argv[i])
+            i += 1
+    return out
+
+
 def main():
+    import sys
+    sys.argv = sys.argv[:1] + _fix_negative_move_args(sys.argv[1:])
     parser = argparse.ArgumentParser(
         description="PD-Stepper chained move sequence",
         formatter_class=argparse.RawDescriptionHelpFormatter,
