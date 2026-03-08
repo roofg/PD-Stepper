@@ -1,6 +1,7 @@
 #include "motion_control.h"
 #include "encoder.h"
 #include "pd_controller.h"
+#include "pins.h"
 #include "step_generator.h"
 #include "telemetry_provider.h"
 #include "tmc_driver.h"
@@ -10,10 +11,10 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-#define STEP_PIN   5
-#define DIR_PIN    6
-#define SW1_PIN    35
-#define VBUS_PIN   4
+#define STEP_PIN   TMC_STEP
+#define DIR_PIN    TMC_DIR
+#define SW1_PIN    PIN_SW1
+#define VBUS_PIN   PIN_VBUS
 #define DIV_RATIO  0.1189427313f
 
 namespace motion {

@@ -1,5 +1,6 @@
 #include "encoder.h"
 #include "motion_control.h"
+#include "pins.h"
 #include "tmc_driver.h"
 #include "usb_telemetry_provider.h"
 #include <Arduino.h>
@@ -18,35 +19,6 @@ static UsbTelemetryProvider usbTelemetry;
 void configureSettings();
 void readSettings();
 void writeSettings();
-
-// TMC2209 pins/config (kept here; driver uses these constants)
-#define TMC_EN 21
-#define STEP 5
-#define DIR 6
-#define MS1 1
-#define MS2 2
-#define SPREAD 7
-#define TMC_TX 17
-#define TMC_RX 18
-#define DIAG 16
-#define INDEX 11
-
-// PD Trigger (CH224K)
-#define PG 15 // power good singnal (dont enable stepper untill this is good)
-#define CFG1 38
-#define CFG2 48
-#define CFG3 47
-
-// Other
-#define VBUS 4
-#define NTC 7
-#define LED1 10
-#define LED2 12
-#define SW1 35
-#define SW2 36
-#define SW3 37
-#define AUX1 14
-#define AUX2 13
 
 // Runtime state
 bool PGState = 0;
@@ -68,37 +40,37 @@ String standstillMode = "NORMAL";
 void setup() {
   esp_task_wdt_delete(NULL); // Stop monitoring loopTask
   // PD Trigger Setup
-  pinMode(PG, INPUT);
-  pinMode(CFG1, OUTPUT);
-  pinMode(CFG2, OUTPUT);
-  pinMode(CFG3, OUTPUT);
-  digitalWrite(CFG1, LOW);
-  digitalWrite(CFG2, LOW);
-  digitalWrite(CFG3, HIGH);
+  pinMode(PD_PG, INPUT);
+  pinMode(PD_CFG1, OUTPUT);
+  pinMode(PD_CFG2, OUTPUT);
+  pinMode(PD_CFG3, OUTPUT);
+  digitalWrite(PD_CFG1, LOW);
+  digitalWrite(PD_CFG2, LOW);
+  digitalWrite(PD_CFG3, HIGH);
 
   // General
-  pinMode(SW1, INPUT);
-  pinMode(SW2, INPUT);
-  pinMode(SW3, INPUT);
-  pinMode(LED1, OUTPUT);
-  pinMode(LED2, OUTPUT);
-  pinMode(STEP, OUTPUT);
-  pinMode(DIR, OUTPUT);
+  pinMode(PIN_SW1, INPUT);
+  pinMode(PIN_SW2, INPUT);
+  pinMode(PIN_SW3, INPUT);
+  pinMode(PIN_LED1, OUTPUT);
+  pinMode(PIN_LED2, OUTPUT);
+  pinMode(TMC_STEP, OUTPUT);
+  pinMode(TMC_DIR, OUTPUT);
 
   // TMC pins
-  pinMode(MS1, OUTPUT);
-  pinMode(MS2, OUTPUT);
+  pinMode(TMC_MS1, OUTPUT);
+  pinMode(TMC_MS2, OUTPUT);
   pinMode(TMC_EN, OUTPUT);
-  pinMode(DIAG, INPUT);
+  pinMode(TMC_DIAG, INPUT);
   digitalWrite(TMC_EN, LOW);
-  digitalWrite(MS2, LOW);
+  digitalWrite(TMC_MS2, LOW);
 
   // AS5600 Hall Encoder Setup
   encoder::init();
   encoder::startTask(5, 1); // 1 kHz (1 ms interval) — AS5600 I2C read ~40µs at 400kHz
 
   // ADC Setup
-  analogSetPinAttenuation(VBUS, ADC_11db);
+  analogSetPinAttenuation(PIN_VBUS, ADC_11db);
 
   readSettings(); // get saved values from EEPROM
 
@@ -113,9 +85,9 @@ void setup() {
 
   // AUX UART — all human-readable debug output goes here (Serial1), keeping
   // USBSerial strictly for binary telemetry packets + JSON command input.
-  // AUX1 (GPIO 14) = TX from ESP32; AUX2 (GPIO 13) = RX into ESP32.
-  // Connect a USB-UART adapter to AUX1+GND to read debug output.
-  Serial1.begin(115200, SERIAL_8N1, AUX2, AUX1);
+  // PIN_AUX1 (GPIO 14) = TX from ESP32; PIN_AUX2 (GPIO 13) = RX into ESP32.
+  // Connect a USB-UART adapter to PIN_AUX1+GND to read debug output.
+  Serial1.begin(115200, SERIAL_8N1, PIN_AUX2, PIN_AUX1);
 
   // USB CDC — binary protocol only (no text written to USBSerial anywhere).
   USBSerial.begin(921600); // Must match TriggerMove.py --baud
@@ -171,9 +143,9 @@ void setup() {
   // Initialize and start web server on core 0 to leave Core 1 for motion
   // Web server removed — all commanding is via USB Serial JSON.
 
-  digitalWrite(LED1, HIGH);
+  digitalWrite(PIN_LED1, HIGH);
   delay(200);
-  digitalWrite(LED1, LOW);
+  digitalWrite(PIN_LED1, LOW);
   // Initialize motion control system
   // Inject telemetry transport — swap to &wifiTelemetry to switch providers.
   motion::setTelemetryProvider(&usbTelemetry);
@@ -297,9 +269,9 @@ void loop() {
   if (millis() - lastPrintTime >= 1000) {
     lastPrintTime = millis();
     // VBus sampling (safe to do at 1Hz on Core 1)
-    float vbus_mv = (float)analogReadMilliVolts(4);    // VBUS pin
+    float vbus_mv = (float)analogReadMilliVolts(PIN_VBUS);
     VBusVoltage = (vbus_mv / 1000.0f) / 0.1189427313f; // DIV_RATIO
-    PGState = digitalRead(15);                         // PG pin
+    PGState = digitalRead(PD_PG);
 
     // Diagnostic output to AUX UART (Serial1), not USB CDC
     Serial1.printf("[SYSTEM] VBus: %.2fV, PG: %s, Core: %d\r\n", VBusVoltage,
@@ -316,23 +288,23 @@ void loop() {
 /// passed to the TMC driver as motor supply voltage.
 void configureSettings() {
   if (setVoltage == "5") {
-    digitalWrite(CFG1, HIGH);
+    digitalWrite(PD_CFG1, HIGH);
   } else if (setVoltage == "9") {
-    digitalWrite(CFG1, LOW);
-    digitalWrite(CFG2, LOW);
-    digitalWrite(CFG3, LOW);
+    digitalWrite(PD_CFG1, LOW);
+    digitalWrite(PD_CFG2, LOW);
+    digitalWrite(PD_CFG3, LOW);
   } else if (setVoltage == "12") {
-    digitalWrite(CFG1, LOW);
-    digitalWrite(CFG2, LOW);
-    digitalWrite(CFG3, HIGH);
+    digitalWrite(PD_CFG1, LOW);
+    digitalWrite(PD_CFG2, LOW);
+    digitalWrite(PD_CFG3, HIGH);
   } else if (setVoltage == "15") {
-    digitalWrite(CFG1, LOW);
-    digitalWrite(CFG2, HIGH);
-    digitalWrite(CFG3, HIGH);
+    digitalWrite(PD_CFG1, LOW);
+    digitalWrite(PD_CFG2, HIGH);
+    digitalWrite(PD_CFG3, HIGH);
   } else if (setVoltage == "20") {
-    digitalWrite(CFG1, LOW);
-    digitalWrite(CFG2, HIGH);
-    digitalWrite(CFG3, LOW);
+    digitalWrite(PD_CFG1, LOW);
+    digitalWrite(PD_CFG2, HIGH);
+    digitalWrite(PD_CFG3, LOW);
   }
 
   tmc::setRunCurrent(current.toInt());

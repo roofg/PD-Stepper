@@ -1,4 +1,5 @@
 #include "tmc_driver.h"
+#include "pins.h"
 #include <HardwareSerial.h>
 #include <TMC2209.h>
 
@@ -6,10 +7,6 @@ namespace tmc {
 static TMC2209 stepper_driver;
 static HardwareSerial serial_stream(2);
 static const long SERIAL_BAUD_RATE = 115200;
-
-// Pin definitions from main.cpp (should ideally be in a common header)
-#define STEP_PIN 5
-#define DIR_PIN 6
 
 void init(int rx_pin, int tx_pin) {
   serial_stream.begin(SERIAL_BAUD_RATE, SERIAL_8N1, rx_pin, tx_pin);
@@ -86,13 +83,13 @@ void moveAtVelocity(int v) {
 void step() {
     // Legacy single-step function. New architecture uses stepgen:: ISR.
     // Kept for compatibility; not called during normal operation.
-    digitalWrite(STEP_PIN, HIGH);
+    digitalWrite(TMC_STEP, HIGH);
     delayMicroseconds(2);
-    digitalWrite(STEP_PIN, LOW);
+    digitalWrite(TMC_STEP, LOW);
 }
 
 void setDirection(bool forward) {
-  digitalWrite(DIR_PIN, forward ? LOW : HIGH); // Match polarity if needed
+  digitalWrite(TMC_DIR, forward ? LOW : HIGH);
 }
 
 /**
