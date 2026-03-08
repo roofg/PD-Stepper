@@ -25,6 +25,11 @@ void setPD(float kp, float kd);
 // Start at 0 and increase in small steps during tuning.
 void setPhaseLeadGain(float kv);
 
+// Set the USB-PD configured supply voltage (V). The planner computes a
+// brownout threshold of 70% of this value and trips a fault if VBus drops
+// below it. Call this from setup() after readSettings().
+void setConfiguredVoltage(float volts);
+
 // Set microsteps per full step. Call this whenever the TMC2209 microstep
 // setting changes so the motion controller can update its encoder scale.
 // Thread-safe (stores to a volatile int32_t read by both tasks).

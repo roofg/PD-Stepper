@@ -42,6 +42,10 @@ static volatile float g_kp = 3.0f;
 static volatile float g_kd = 0.1f;
 static volatile float g_kv = 0.0f;
 
+// Brownout threshold — 70% of the configured USB-PD supply voltage.
+// Written once from setup() via setConfiguredVoltage(); read by PlannerTask.
+static volatile float g_brownout_threshold_v = 9.0f; // safe default (12V * 0.75)
+
 static QueueHandle_t     s_motionQueue   = nullptr;
 static TaskHandle_t      s_plannerHandle = nullptr;
 static TaskHandle_t      s_controlHandle = nullptr;
@@ -199,7 +203,7 @@ static void PlannerTask(void *) {
                 lastVBusMs = millis();
                 float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
                 float vbus    = (vbus_mv / 1000.0f) / DIV_RATIO;
-                if (vbus < 9.0f) {
+                if (vbus < g_brownout_threshold_v) {
                     g_fault_brownout = true;
                 }
             }
@@ -363,6 +367,15 @@ void setPD(float kp, float kd) {
 
 void setPhaseLeadGain(float kv) {
     g_kv = kv;
+}
+
+void setConfiguredVoltage(float volts) {
+    // Brownout threshold = 70% of configured supply.
+    // USB-PD voltages are within ±5% in steady state; 70% gives enough margin
+    // to catch a genuine dropout without false-tripping under motor load.
+    if (volts > 4.0f) {
+        g_brownout_threshold_v = volts * 0.7f;
+    }
 }
 
 void setMicrosteps(int ms) {

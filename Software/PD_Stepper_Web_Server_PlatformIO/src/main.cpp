@@ -179,6 +179,7 @@ void setup() {
   motion::setTelemetryProvider(&usbTelemetry);
   motion::init();
   motion::setMicrosteps(microsteps.toInt());
+  motion::setConfiguredVoltage((float)setVoltage.toInt()); // derive brownout threshold
 
   Serial1.println("Setup complete");
 }
@@ -230,6 +231,7 @@ void processSerialCommands() {
             const char *v = doc["value"] | "20";
             setVoltage = String(v);
             configureSettings();
+            motion::setConfiguredVoltage((float)setVoltage.toInt());
             Serial1.printf("Set voltage: %s V\n", v);
 
           } else if (strcmp(cmd, "set_current") == 0) {
