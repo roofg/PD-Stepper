@@ -47,8 +47,10 @@ static volatile float g_kv = 0.0f;
 static volatile float g_brownout_threshold_v = 9.0f; // safe default (12V * 0.75)
 
 static QueueHandle_t     s_motionQueue   = nullptr;
+static QueueHandle_t     s_teleQueue     = nullptr; // ControlTask → TelemetryTask
 static TaskHandle_t      s_plannerHandle = nullptr;
 static TaskHandle_t      s_controlHandle = nullptr;
+static TaskHandle_t      s_teleHandle    = nullptr;
 static TelemetryProvider *s_telemetry    = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -128,6 +130,23 @@ public:
         return fabsf(targetPos - currentPos) < 2.0f && fabsf(currentVel) < 20.0f;
     }
 };
+
+// ---------------------------------------------------------------------------
+// Telemetry Task — Core 0, priority 3, runs on demand
+//
+// Dequeues TelemetryData snapshots sent from ControlTask and forwards them
+// to the TelemetryProvider (USBSerial.write). Running on Core 0 at low
+// priority means a blocked USB CDC TX FIFO only stalls this task, not the
+// 1 kHz ControlTask on Core 1.
+// ---------------------------------------------------------------------------
+static void TelemetryTask(void *) {
+    TelemetryData d;
+    for (;;) {
+        if (xQueueReceive(s_teleQueue, &d, portMAX_DELAY) == pdPASS) {
+            if (s_telemetry) s_telemetry->sendTelemetry(d);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Planner Task — Core 0, priority 5, runs at 500 Hz during a move
@@ -331,7 +350,7 @@ static void ControlTask(void *) {
             stepgen::halt();
         }
 
-        // --- Telemetry at 10 Hz ---
+        // --- Telemetry at 10 Hz — enqueue snapshot for TelemetryTask ---
         if (millis() - lastTeleMs >= 100) {
             float dt_s    = (millis() - lastTeleMs) / 1000.0f;
             lastTeleMs    = millis();
@@ -339,7 +358,7 @@ static void ControlTask(void *) {
                             * counts_to_steps / dt_s;
             lastTeleEnc   = encCounts;
 
-            if (s_telemetry) {
+            if (s_teleQueue) {
                 TelemetryData d;
                 d.type      = TELEMETRY_UPDATE;
                 d.timestamp = micros();
@@ -350,8 +369,9 @@ static void ControlTask(void *) {
                 d.vel       = (int)ref.vel;
                 d.p_acc     = (int)ref.acc;
                 d.p_dist    = (int)(g_target_pos - measPos);
-                d.sg_result = g_sg_result; // written by Planner Task (safe)
-                s_telemetry->sendTelemetry(d);
+                d.sg_result = g_sg_result;
+                // Non-blocking: drop packet if queue full rather than stalling.
+                xQueueSend(s_teleQueue, &d, 0);
             }
         }
     }
@@ -391,6 +411,7 @@ void setMicrosteps(int ms) {
 
 void init() {
     s_motionQueue = xQueueCreate(10, sizeof(MotionCommand));
+    s_teleQueue   = xQueueCreate(2,  sizeof(TelemetryData)); // 2 slots: 1 active + 1 slack
 
     // Initialise step generator ISR (timer starts immediately but produces no
     // pulses until setVelocity() is called with a non-zero value).
@@ -398,12 +419,16 @@ void init() {
 
     tmc::setRunCurrent(80); // 80 % run current for safe high-speed moves
 
+    // Telemetry Task: Core 0, lowest priority — allowed to block on USB TX
+    xTaskCreatePinnedToCore(TelemetryTask, "TeleTask",   2048, nullptr,  3,
+                            &s_teleHandle,    0);
+
     // Planner Task: Core 0, lower priority — can use UART/ADC safely
-    xTaskCreatePinnedToCore(PlannerTask, "PlannerTask", 8192, nullptr,  5,
+    xTaskCreatePinnedToCore(PlannerTask,   "PlannerTask", 8192, nullptr,  5,
                             &s_plannerHandle, 0);
 
     // Control Task: Core 1, high priority — timing-critical real-time loop
-    xTaskCreatePinnedToCore(ControlTask, "ControlTask", 4096, nullptr, 19,
+    xTaskCreatePinnedToCore(ControlTask,   "ControlTask", 4096, nullptr, 19,
                             &s_controlHandle, 1);
 }
 
