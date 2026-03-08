@@ -55,8 +55,20 @@ static TaskHandle_t      s_teleHandle    = nullptr;
 static TelemetryProvider *s_telemetry    = nullptr;
 
 // ---------------------------------------------------------------------------
-// Trajectory Planner (S-curve with jerk limiting)
-// Generates a smooth reference trajectory (pos/vel/acc) from a MotionCommand.
+// Trajectory Planner
+//
+// Executes a single pre-planned block (produced by planChain()).  Entry and
+// exit velocities are guaranteed achievable by the planner — no reactive
+// junction clamping needed here.  The planner runs a simple trapezoidal
+// (S-curve smoothed) profile:
+//
+//   Phase 1  – accelerate from entryVel toward cruiseVel
+//   Phase 2  – coast at cruiseVel (may be absent for short segments)
+//   Phase 3  – decelerate from cruiseVel to exitVel
+//
+// isComplete() fires on a simple position crossing — no velocity window.
+// Any small velocity residual at the crossing is carried into the next block
+// and corrected by the PD control loop.
 // ---------------------------------------------------------------------------
 class TrajectoryPlanner {
 public:
@@ -64,106 +76,58 @@ public:
     float currentVel = 0;
     float currentAcc = 0;
     float targetPos  = 0;
-    float maxV = 0;
-    float maxA = 0;
-    float jerk = 0;
-    // exitVelocity: speed magnitude at move end (0=full stop, >0=chain handoff).
-    // moveForward: set once at reset time — direction of this move segment.
-    // signedExitVel() returns the correctly-signed target velocity for damping/completion.
-    float exitVelocity = 0;
-    bool  moveForward  = true;
 
-    float signedExitVel() const { return moveForward ? exitVelocity : -exitVelocity; }
+private:
+    float cruiseVel  = 0;
+    float exitVel    = 0;
+    float maxA       = 0;
+    float jerk       = 0;
+    bool  moveForward = true;
 
-    void reset(float startPos, float trg, float mv, float ma, float exitVel = 0.0f) {
-        currentPos    = startPos;
-        targetPos     = trg;
-        maxV          = fabsf(mv);
-        maxA          = fabsf(ma);
-        jerk          = maxA * 100.0f; // snap acceleration for responsiveness
-        currentVel    = 0;
-        currentAcc    = 0;
-        moveForward   = (trg > startPos);
-        exitVelocity  = fabsf(exitVel);
-        if (exitVelocity > maxV) exitVelocity = maxV; // can't exit faster than we travel
-    }
-
-    // Chain variant: preserves currentVel/currentAcc for seamless velocity handoff.
-    // Call this instead of reset() when transitioning to the next chained move.
-    void resetChained(float trg, float mv, float ma, float exitVel = 0.0f) {
-        targetPos    = trg;
-        maxV         = fabsf(mv);
-        maxA         = fabsf(ma);
-        jerk         = maxA * 100.0f;
-        moveForward  = (trg > currentPos);
-        exitVelocity = fabsf(exitVel);
-        if (exitVelocity > maxV) exitVelocity = maxV;
-        // currentPos, currentVel, currentAcc intentionally preserved
+public:
+    // Reset for a new pre-planned block.
+    // currentPos/currentVel/currentAcc carry over from the previous block
+    // (velocity continuity). The caller must zero currentVel before the
+    // very first block.
+    void resetForBlock(float startPos, float endPos, const PlannedBlock& blk) {
+        currentPos  = startPos;
+        targetPos   = endPos;
+        cruiseVel   = blk.cruiseVel;
+        exitVel     = blk.exitVel;
+        maxA        = (blk.accel > 1.0f) ? blk.accel : 1.0f;
+        jerk        = maxA * 100.0f;
+        moveForward = blk.forward;
+        currentAcc  = 0;
+        // currentVel intentionally preserved for velocity continuity
     }
 
     void update(float dt) {
         float distToTarget = fabsf(targetPos - currentPos);
-        bool  forward      = (targetPos > currentPos);
+        float spd          = fabsf(currentVel);
+
+        // Braking distance needed to decelerate from current speed to exitVel.
+        float brakeDist = 0;
+        if (spd > exitVel) {
+            brakeDist = (spd * spd - exitVel * exitVel) / (2.0f * maxA);
+        }
 
         float targetAcc = 0.0f;
 
-        if (exitVelocity > 0.0f) {
-            // ---- Chain handoff mode ----
-            // Accelerate to maxV, brake to exitVelocity, then coast through targetPos.
-            // isComplete() fires when the planner position crosses targetPos at ~exitVelocity.
-            float spd = fabsf(currentVel);
-            bool  dirAligned = moveForward ? (currentVel >= 0.0f) : (currentVel <= 0.0f);
-
-            if (!dirAligned) {
-                // Moving in the wrong direction — brake unconditionally.
-                targetAcc = (currentVel > 0) ? -maxA : maxA;
-            } else {
-                float excessVel = spd - exitVelocity;
-                if (excessVel > 5.0f) {
-                    // Above exit velocity: brake if we won't reach exitVelocity by target.
-                    // stoppingDist = (v^2 - ev^2)/(2a) = (v-ev)(v+ev)/(2a)
-                    float stoppingDist = excessVel * (spd + exitVelocity) / (2.0f * maxA);
-                    if (distToTarget < stoppingDist + excessVel * 0.02f) {
-                        targetAcc = (currentVel > 0) ? -maxA : maxA; // brake toward exit vel
-                    } else if (spd < maxV) {
-                        targetAcc = moveForward ? maxA : -maxA;       // accelerate to cruise
-                    }
-                    // else: cruise at maxV — targetAcc stays 0
-                } else if (spd < exitVelocity - 5.0f) {
-                    // Below exit velocity (handles start-from-rest and jerk undershoot):
-                    // accelerate back up toward exitVelocity.
-                    targetAcc = moveForward ? maxA : -maxA;
-                }
-                // else: within ±5 steps/s of exitVelocity — coast through target.
-            }
-
-        } else {
-            // ---- Full-stop mode ----
-            // Classic trapezoidal / S-curve decelerate to 0 at targetPos.
-            float stoppingDist = (currentVel * currentVel) / (2.0f * maxA);
-
-            float approachVel = maxV;
-            if (distToTarget < 500.0f) {
-                approachVel = distToTarget * 10.0f;
-                if (approachVel < 5.0f)  approachVel = 5.0f;
-                if (approachVel > maxV)  approachVel = maxV;
-            }
-
-            if (distToTarget < 2.0f && fabsf(currentVel) < 20.0f) {
-                // Damping zone: servo currentVel toward 0
-                targetAcc = -currentVel * 10.0f;
-                if (fabsf(targetAcc) > maxA)
-                    targetAcc = (targetAcc > 0) ? maxA : -maxA;
-            } else if (distToTarget < stoppingDist + fabsf(currentVel) * 0.02f ||
-                       fabsf(currentVel) > approachVel) {
-                targetAcc = (currentVel > 0) ? -maxA : maxA; // brake toward 0
-            } else {
-                if (fabsf(currentVel) < approachVel)
-                    targetAcc = forward ? maxA : -maxA;       // accelerate to approach vel
-            }
+        if (distToTarget < 2.0f && fabsf(spd - exitVel) < 20.0f) {
+            // Damping zone: servo velocity smoothly to exitVel
+            float signedExit = moveForward ? exitVel : -exitVel;
+            targetAcc = (signedExit - currentVel) * 10.0f;
+            if (fabsf(targetAcc) > maxA) targetAcc = (targetAcc > 0) ? maxA : -maxA;
+        } else if (brakeDist >= distToTarget - spd * 0.002f) {
+            // Start braking (one-tick lookahead buffer prevents overshoot)
+            targetAcc = (currentVel > 0) ? -maxA : maxA;
+        } else if (spd < cruiseVel) {
+            // Accelerate to cruise speed
+            targetAcc = moveForward ? maxA : -maxA;
         }
+        // else: coast at cruiseVel
 
-        // Apply jerk limit (S-curve smoothing)
+        // S-curve jerk limit
         if (currentAcc < targetAcc) {
             currentAcc += jerk * dt;
             if (currentAcc > targetAcc) currentAcc = targetAcc;
@@ -173,24 +137,106 @@ public:
         }
 
         currentVel += currentAcc * dt;
-        if (currentVel >  maxV) { currentVel =  maxV; currentAcc = 0; }
-        if (currentVel < -maxV) { currentVel = -maxV; currentAcc = 0; }
+        // Clamp to ±cruiseVel
+        if (currentVel >  cruiseVel) { currentVel =  cruiseVel; currentAcc = 0; }
+        if (currentVel < -cruiseVel) { currentVel = -cruiseVel; currentAcc = 0; }
 
         currentPos += currentVel * dt;
     }
 
+    // Simple position crossing — no velocity gate.
     bool isComplete() const {
-        if (exitVelocity > 0.0f) {
-            // Chain mode: fire when the planner position crosses the handoff point at
-            // approximately the junction velocity. 100-step/s tolerance covers
-            // jerk-induced velocity undershoot (~40 steps/s typical at maxA=9000).
-            bool crossed = moveForward ? (currentPos >= targetPos) : (currentPos <= targetPos);
-            return crossed && fabsf(currentVel - signedExitVel()) < 100.0f;
-        }
-        // Full-stop mode: within 2 steps of target, nearly stationary.
-        return fabsf(targetPos - currentPos) < 2.0f && fabsf(currentVel) < 20.0f;
+        return moveForward ? (currentPos >= targetPos) : (currentPos <= targetPos);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Marlin-style chain planner
+//
+// Computes globally-optimal entry/exit velocities for a sequence of moves
+// using a forward pass (kinematic achievability) followed by a reverse pass
+// (safe-stop propagation).
+//
+//   Forward pass:  entry[i+1] = min(desired_junction, sqrt(entry[i]^2 + 2*a[i]*d[i]))
+//   Reverse pass:  entry[i+1] = min(entry[i+1], sqrt(exit[i+1]^2 + 2*a[i+1]*d[i+1]))
+//                  exit[i]    = entry[i+1]
+//   Feasibility:   if exit[i] is below the minimum achievable (motor can't decelerate
+//                  fast enough), raise it to the kinematic minimum.
+//
+// cmds:     command array
+// n:        command count
+// startPos: absolute encoder position at chain start
+// out:      output array (at least n elements)
+// ---------------------------------------------------------------------------
+static const int MAX_CHAIN_LEN = 32;
+
+static void planChain(const MotionCommand* cmds, int n,
+                      float startPos, PlannedBlock* out) {
+    // ---- Populate blocks ----
+    float pos = startPos;
+    for (int i = 0; i < n; i++) {
+        float raw = cmds[i].absolute
+                    ? ((float)cmds[i].distance - pos)
+                    : (float)cmds[i].distance;
+        out[i].dist     = fabsf(raw);
+        out[i].forward  = (raw >= 0.0f);
+        out[i].cruiseVel = fabsf(cmds[i].maxSpeed);
+        out[i].accel     = fabsf(cmds[i].acceleration);
+        if (out[i].accel < 1.0f) out[i].accel = 1.0f;
+        out[i].entryVel  = 0.0f;
+        out[i].exitVel   = 0.0f;
+        pos += raw;
+    }
+
+    // ---- Forward pass ----
+    // Propagate maximum achievable entry velocity at each junction.
+    out[0].entryVel = 0.0f; // chain always starts from rest
+    for (int i = 1; i < n; i++) {
+        bool sameDir = (out[i-1].forward == out[i].forward);
+        float desired = sameDir
+            ? fminf(out[i-1].cruiseVel, out[i].cruiseVel)
+            : 0.0f; // direction reversal: must stop at boundary
+        float maxReach = sqrtf(out[i-1].entryVel * out[i-1].entryVel
+                               + 2.0f * out[i-1].accel * out[i-1].dist);
+        out[i].entryVel = fminf(desired, maxReach);
+        if (out[i].entryVel > out[i].cruiseVel) out[i].entryVel = out[i].cruiseVel;
+    }
+
+    // Provisional exit speeds = next block's entry (chain always ends at rest)
+    for (int i = 0; i < n - 1; i++) out[i].exitVel = out[i+1].entryVel;
+    out[n-1].exitVel = 0.0f;
+
+    // ---- Reverse pass ----
+    // Constrain entry speeds so the motor can always stop by chain end.
+    for (int i = n - 2; i >= 0; i--) {
+        float maxEntry = sqrtf(out[i+1].exitVel  * out[i+1].exitVel
+                               + 2.0f * out[i+1].accel * out[i+1].dist);
+        if (out[i+1].entryVel > maxEntry) out[i+1].entryVel = maxEntry;
+        out[i].exitVel = out[i+1].entryVel; // propagate back
+    }
+
+    // ---- Feasibility clamp ----
+    // After the reverse pass, a decelerating block's exit may have been lowered
+    // below what maximum deceleration can achieve (rare: only when a very short
+    // segment sits between two fast moves).  Raise exit to the physical minimum.
+    for (int i = 0; i < n; i++) {
+        if (out[i].entryVel > out[i].exitVel && out[i].dist > 0) {
+            float sq = out[i].entryVel * out[i].entryVel
+                       - 2.0f * out[i].accel * out[i].dist;
+            float minExit = (sq > 0.0f) ? sqrtf(sq) : 0.0f;
+            if (out[i].exitVel < minExit) {
+                out[i].exitVel = minExit;
+                if (i + 1 < n) out[i+1].entryVel = minExit;
+            }
+        }
+        // exitVel cannot exceed cruiseVel
+        if (out[i].exitVel > out[i].cruiseVel) out[i].exitVel = out[i].cruiseVel;
+
+        Serial1.printf("DBG:PLAN[%d] dist=%.0f fwd=%d entry=%.0f cruise=%.0f exit=%.0f\n",
+                       i, out[i].dist, (int)out[i].forward,
+                       out[i].entryVel, out[i].cruiseVel, out[i].exitVel);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Telemetry Task — Core 0, priority 3, runs on demand
@@ -218,205 +264,138 @@ static void TelemetryTask(void *) {    TelemetryData d;
 //     safe on Core 0, must NOT be called from the Control Task
 //   • Detect move completion; handle all TMC enable/disable calls
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Planner Task — Core 0, priority 5, runs at 500 Hz during a move
+//
+// Offline block planner (Marlin-style):
+//   1. Wait for first command → enable TMC → 20 ms settle window
+//   2. Drain ALL queued commands into cmdBuf (up to MAX_CHAIN_LEN)
+//   3. planChain() → globally optimal block velocities (forward+reverse pass)
+//   4. Execute blocks sequentially; carry velocity/position across boundaries
+//   5. Single STOP packet after all blocks or on fault
+//
+// VBus brownout and StallGuard are checked at 200 ms intervals (UART/ADC
+// safe on Core 0; must NOT be called from ControlTask on Core 1).
+// ---------------------------------------------------------------------------
 static void PlannerTask(void *) {
-    // PlannerTask is not registered with the task WDT (only the Arduino loopTask
-    // is registered by default). The delete call was a no-op and is removed.
-
-    MotionCommand cmd;
+    MotionCommand    cmdBuf[MAX_CHAIN_LEN];
+    PlannedBlock     blocks[MAX_CHAIN_LEN];
     TrajectoryPlanner planner;
-    float uSteps           = 32.0f;
-    float counts_to_steps  = (200.0f * uSteps) / 4096.0f;
+
+    float uSteps          = 32.0f;
+    float counts_to_steps = (200.0f * uSteps) / 4096.0f;
+    (void)counts_to_steps; // updated per-chain; referenced via g_uSteps_setting in ControlTask
 
     for (;;) {
-        // Block until a command arrives
-        if (xQueueReceive(s_motionQueue, &cmd, portMAX_DELAY) != pdPASS) continue;
+        // ---- Wait for first command ----
+        if (xQueueReceive(s_motionQueue, &cmdBuf[0], portMAX_DELAY) != pdPASS) continue;
 
-        // ---- Initialise move ----
+        // ---- TMC enable + settle ----
         uSteps          = (float)g_uSteps_setting;
         if (uSteps < 1) uSteps = 32.0f;
         counts_to_steps = (200.0f * uSteps) / 4096.0f;
 
         tmc::enable();
-        vTaskDelay(pdMS_TO_TICKS(20)); // wait for rails to stabilise
+        vTaskDelay(pdMS_TO_TICKS(20)); // wait for driver rails to stabilise
 
-        float startPos = g_meas_pos;  // use encoder as ground truth
-        float target   = cmd.absolute
-                         ? (float)cmd.distance
-                         : (startPos + (float)cmd.distance);
-        g_target_pos   = target;
-
-        // Peek at the next queued command (without dequeuing) to compute
-        // the junction velocity for this move. This must be done before reset()
-        // so the planner decelerates to the correct exit velocity.
-        float junctionVel = 0.0f;
-        if (cmd.chain) {
-            MotionCommand nextCmd;
-            if (xQueuePeek(s_motionQueue, &nextCmd, 0) == pdPASS) {
-                float nextTarget = nextCmd.absolute
-                                   ? (float)nextCmd.distance
-                                   : (target + (float)nextCmd.distance);
-                // Direction check: if next move is same direction, use junction velocity;
-                // if opposite direction, must decelerate to zero (can't reverse without stopping).
-                bool currForward = (target > startPos);
-                bool nextForward = (nextTarget > target);
-                if (currForward == nextForward) {
-                    junctionVel = fminf(cmd.maxSpeed, nextCmd.maxSpeed);
-                    // Clamp to the safe entry speed for the next segment:
-                    // motor must be able to decelerate from junctionVel to a stop
-                    // within nextDist. Without this, short segments overshoot.
-                    float nextDist     = fabsf(nextTarget - target);
-                    float maxSafeEntry = sqrtf(2.0f * nextCmd.acceleration * nextDist);
-                    if (junctionVel > maxSafeEntry) junctionVel = maxSafeEntry;
-                    // Clamp to what the current move can actually achieve starting from
-                    // rest.  If this move is too short to reach junctionVel the isComplete()
-                    // velocity check will never fire at targetPos, causing a large overshoot.
-                    float maxAchievable = sqrtf(2.0f * cmd.acceleration * fabsf(target - startPos));
-                    if (junctionVel > maxAchievable) junctionVel = maxAchievable;
-                }
-                // else: junctionVel stays 0 — full deceleration required for reversal
+        // ---- Drain all queued commands within the settle window ----
+        int nCmds = 1;
+        while (nCmds < MAX_CHAIN_LEN) {
+            if (xQueueReceive(s_motionQueue, &cmdBuf[nCmds], 0) == pdPASS) {
+                nCmds++;
+            } else {
+                break; // queue empty
             }
-            // If queue is empty when we peek: default to junctionVel=0. The move will
-            // decelerate to stop normally. If a command arrives later, it starts fresh.
         }
+        Serial1.printf("DBG:PLANNER %d cmd(s) queued\n", nCmds);
 
-        planner.reset(startPos, target, cmd.maxSpeed, cmd.acceleration, junctionVel);
-        trajbuf::clear();
+        // ---- planChain: compute globally-optimal block velocities ----
+        float chainStartPos = g_meas_pos;
+        planChain(cmdBuf, nCmds, chainStartPos, blocks);
 
-        // Reset faults and start motion
+        // ---- Reset faults ----
         g_fault_lag = g_fault_estop = g_fault_brownout = false;
         s_running   = true;
 
-        char     stopReason[32] = "Completed"; // fixed buffer — no heap alloc on exit path
+        char     stopReason[32] = "Completed";
         uint32_t lastVBusMs    = millis();
         uint32_t lastSGMs      = millis();
-        uint32_t prevPlanUs    = micros(); // track real elapsed time for planner dt
-
+        uint32_t prevPlanUs    = micros();
         TickType_t xLastWake   = xTaskGetTickCount();
 
-        while (s_running) {
-            // --- 500 Hz planner update with real dt ---
-            uint32_t nowUs = micros();
-            float dt = (float)(nowUs - prevPlanUs) * 1e-6f;
-            if (dt > 0.005f) dt = 0.005f;
-            if (dt < 0.0001f) dt = 0.001f; // guard against zero on first tick
-            prevPlanUs = nowUs;
-            planner.update(dt);
+        // ---- Execute each block sequentially ----
+        float blockStartPos = chainStartPos;
+        planner.currentVel = 0.0f;
+        planner.currentAcc = 0.0f;
 
-            TrajectoryPoint pt;
-            pt.pos = planner.currentPos;
-            pt.vel = planner.currentVel;
-            pt.acc = planner.currentAcc;
-            trajbuf::push(pt);
+        for (int bi = 0; bi < nCmds && s_running; bi++) {
+            const PlannedBlock& blk = blocks[bi];
 
-            // --- VBus brownout check (200 ms) ---
-            if (millis() - lastVBusMs >= 200) {
-                lastVBusMs = millis();
-                float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
-                float vbus    = (vbus_mv / 1000.0f) / DIV_RATIO;
-                if (vbus < g_brownout_threshold_v) {
-                    g_fault_brownout = true;
-                }
-            }
+            float blockEndPos = blockStartPos + (blk.forward ? blk.dist : -blk.dist);
+            planner.resetForBlock(blockStartPos, blockEndPos, blk);
+            g_target_pos = blockEndPos;
 
-            // --- StallGuard check (200 ms) — UART is safe on Core 0 ---
-            if (millis() - lastSGMs >= 200) {
-                lastSGMs  = millis();
-                g_sg_result = (uint16_t)tmc::getStallGuardResult();
-            }
+            trajbuf::clear();
+            prevPlanUs = micros();
+            xLastWake  = xTaskGetTickCount();
 
-            // --- Aggregate faults → pick stop reason ---
-            if (g_fault_lag)      { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
-            if (g_fault_estop)    { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
-            if (g_fault_brownout) { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
+            Serial1.printf("DBG:BLOCK[%d] start=%.0f end=%.0f entry=%.0f exit=%.0f\n",
+                           bi, blockStartPos, blockEndPos, blk.entryVel, blk.exitVel);
 
-            if (!s_running) break; // fault already set
+            // -- Inner loop: run this block at 500 Hz --
+            while (s_running) {
+                uint32_t nowUs = micros();
+                float dt = (float)(nowUs - prevPlanUs) * 1e-6f;
+                if (dt > 0.005f) dt = 0.005f;
+                if (dt < 0.0001f) dt = 0.001f;
+                prevPlanUs = nowUs;
 
-            // --- Completion check ---
-            if (planner.isComplete()) {
-                if (cmd.chain) {
-                    // Try to dequeue the next command for a chained transition.
-                    // Chain transitions are based on planner completion only — the encoder
-                    // will track the handoff point via PD control.
-                    MotionCommand nextCmd;
-                    if (xQueueReceive(s_motionQueue, &nextCmd, 0) == pdPASS) {
-                        // Compute the junction velocity for the NEW move (after nextCmd)
-                        float nextJunctionVel = 0.0f;
-                        if (nextCmd.chain) {
-                            MotionCommand afterNext;
-                            if (xQueuePeek(s_motionQueue, &afterNext, 0) == pdPASS) {
-                                float nextTarget = nextCmd.absolute
-                                                   ? (float)nextCmd.distance
-                                                   : (target + (float)nextCmd.distance);
-                                float afterTarget = afterNext.absolute
-                                                    ? (float)afterNext.distance
-                                                    : (nextTarget + (float)afterNext.distance);
-                                bool nextForward  = (nextTarget > target);
-                                bool afterForward = (afterTarget > nextTarget);
-                                if (nextForward == afterForward) {
-                                    nextJunctionVel = fminf(nextCmd.maxSpeed, afterNext.maxSpeed);
-                                    float afterDist = fabsf(afterTarget - nextTarget);
-                                    // Reserve 2 planner ticks at max junction speed so the motor
-                                    // can stop within the next segment even if isComplete() fires
-                                    // one tick late (crossing delay ~10 steps at 5000 steps/s).
-                                    float safeAfterDist = fmaxf(0.0f, afterDist - nextJunctionVel * 0.004f);
-                                    float maxSafeEntry  = sqrtf(2.0f * afterNext.acceleration * safeAfterDist);
-                                    if (nextJunctionVel > maxSafeEntry) nextJunctionVel = maxSafeEntry;
-                                }
-                            }
-                        }
+                planner.update(dt);
 
-                        // Compute next move's absolute target from the CURRENT target (chain end point)
-                        float nextTarget = nextCmd.absolute
-                                           ? (float)nextCmd.distance
-                                           : (target + (float)nextCmd.distance);
+                TrajectoryPoint pt;
+                pt.pos = planner.currentPos;
+                pt.vel = planner.currentVel;
+                pt.acc = planner.currentAcc;
+                trajbuf::push(pt);
 
-                        // Clamp nextJunctionVel by what nextCmd can achieve entering at the
-                        // current chain velocity.  Use planner.currentPos as the true start
-                        // (resetChained preserves it), not `target` which may be a few steps
-                        // behind due to the crossing-detection delay.
-                        {
-                            float enterVel       = fabsf(planner.currentVel);
-                            float nextMoveDist   = fabsf(nextTarget - planner.currentPos);
-                            float maxNextAchiev  = sqrtf(enterVel * enterVel
-                                                         + 2.0f * nextCmd.acceleration * nextMoveDist);
-                            if (nextJunctionVel > maxNextAchiev) nextJunctionVel = maxNextAchiev;
-                        }
-
-                        Serial1.printf("DBG:CHAIN_TRANSITION from=%.0f to=%.0f vel=%.0f\n",
-                                       target, nextTarget, planner.currentVel);
-
-                        target       = nextTarget;
-                        g_target_pos = target;
-                        cmd          = nextCmd;
-
-                        // resetChained() preserves currentVel/currentAcc — no velocity discontinuity
-                        planner.resetChained(target, cmd.maxSpeed, cmd.acceleration, nextJunctionVel);
-
-                        // Do NOT clear trajbuf — let it drain naturally to avoid starving ControlTask.
-                        // The new trajectory points will be pushed from the next planner tick onward.
-                        // s_running stays true, TMC stays enabled — chain is seamless.
-                        continue; // skip normal completion path
-                    }
-                    // Queue was empty by the time we tried to dequeue — fall through to normal stop
+                // VBus brownout check (200 ms)
+                if (millis() - lastVBusMs >= 200) {
+                    lastVBusMs = millis();
+                    float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
+                    float vbus    = (vbus_mv / 1000.0f) / DIV_RATIO;
+                    if (vbus < g_brownout_threshold_v) g_fault_brownout = true;
                 }
 
-                // Non-chain or queue-empty: confirm with encoder before declaring done.
-                // (Prevents premature stop if the encoder is still catching up.)
-                if (fabsf(g_meas_pos - target) < 30.0f) {
-                    strncpy(stopReason, "Completed", 31);
-                    s_running  = false;
+                // StallGuard check (200 ms)
+                if (millis() - lastSGMs >= 200) {
+                    lastSGMs    = millis();
+                    g_sg_result = (uint16_t)tmc::getStallGuardResult();
                 }
+
+                // Fault handling
+                if (g_fault_lag)      { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
+                if (g_fault_estop)    { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
+                if (g_fault_brownout) { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
+                if (!s_running) break;
+
+                // Block complete: simple position crossing — no velocity window needed
+                if (planner.isComplete()) break;
+
+                vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
             }
 
-            // Wait for next 2 ms period (500 Hz)
-            vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
+            // Carry planner position to next block start (velocity is already live in planner)
+            blockStartPos = planner.currentPos;
+
+            // Option C streaming hook: if more commands arrive here, append to blocks[] and
+            // re-run planChain() over the remaining+new commands for seamless continuation.
         }
 
-        // ---- Clean exit (only reached at end of chain or on fault) ----
+        // ---- Clean exit ----
         Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason);
 
         stepgen::halt();
-        vTaskDelay(pdMS_TO_TICKS(100)); // settle before disabling driver
+        vTaskDelay(pdMS_TO_TICKS(100));
 
         Serial1.printf("DBG:TMC_DISABLE_START\n");
         tmc::disable();

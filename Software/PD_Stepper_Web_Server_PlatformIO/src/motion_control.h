@@ -13,6 +13,17 @@ struct MotionCommand {
     bool  chain;         // true → do not stop/disable at move end; transition to next queued command
 };
 
+// Pre-planned motion block produced by planChain().
+// entry/exit velocities are globally optimal (Marlin-style forward+reverse pass).
+struct PlannedBlock {
+    float dist;      // unsigned distance (steps)
+    float entryVel;  // speed at block start (steps/s, ≥ 0)
+    float cruiseVel; // maximum speed within block (steps/s)
+    float exitVel;   // speed at block end (steps/s, ≥ 0)
+    float accel;     // acceleration magnitude (steps/s²)
+    bool  forward;   // true = positive direction
+};
+
 // Inject the telemetry provider before calling init().
 void setTelemetryProvider(TelemetryProvider *provider);
 
