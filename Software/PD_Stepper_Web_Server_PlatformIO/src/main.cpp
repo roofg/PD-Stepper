@@ -337,19 +337,11 @@ void readSettings() {
     writeSettings();
   } else {
     Serial1.println("Settings found in EEPROM");
-    setVoltage = preferences.getString("voltage", "");
-    if (setVoltage == "12") {
-      setVoltage = "20"; // Migration to higher PD voltage for test
-      preferences.putString("voltage", "20");
-    }
-    microsteps = preferences.getString("microsteps", "");
-    current = preferences.getString("current", "");
-    if (current == "80" || current == "30") {
-      current = "50"; // Safer middle ground for high speed
-      preferences.putString("current", "50");
-    }
-    stallThreshold = preferences.getString("stallThreshold", "");
-    standstillMode = preferences.getString("standstillMode", "");
+    setVoltage     = preferences.getString("voltage",       "20");
+    microsteps     = preferences.getString("microsteps",    "32");
+    current        = preferences.getString("current",       "50");
+    stallThreshold = preferences.getString("stallThreshold","10");
+    standstillMode = preferences.getString("standstillMode","NORMAL");
     preferences.end();
   }
 }

@@ -75,21 +75,7 @@ void enable() { stepper_driver.enable(); }
  * @param v
  */
 void moveAtVelocity(int v) {
-  // We keep this for backward compatibility or legacy use,
-  // but the new motion system will use step() pulses.
   stepper_driver.moveAtVelocity(v);
-}
-
-void step() {
-    // Legacy single-step function. New architecture uses stepgen:: ISR.
-    // Kept for compatibility; not called during normal operation.
-    digitalWrite(TMC_STEP, HIGH);
-    delayMicroseconds(2);
-    digitalWrite(TMC_STEP, LOW);
-}
-
-void setDirection(bool forward) {
-  digitalWrite(TMC_DIR, forward ? LOW : HIGH);
 }
 
 /**

@@ -192,7 +192,7 @@ static void PlannerTask(void *) {
         g_fault_lag = g_fault_estop = g_fault_brownout = false;
         s_running   = true;
 
-        String   stopReason    = "Completed";
+        char     stopReason[32] = "Completed"; // fixed buffer — no heap alloc on exit path
         uint32_t lastVBusMs    = millis();
         uint32_t lastSGMs      = millis();
         uint32_t prevPlanUs    = micros(); // track real elapsed time for planner dt
@@ -235,14 +235,14 @@ static void PlannerTask(void *) {
             }
 
             // --- Aggregate faults → pick stop reason ---
-            if (g_fault_lag)      { stopReason = "Lag Fault";     s_running = false; }
-            if (g_fault_estop)    { stopReason = "E-STOP (SW1)";  s_running = false; }
-            if (g_fault_brownout) { stopReason = "Brownout Fault"; s_running = false; }
+            if (g_fault_lag)      { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
+            if (g_fault_estop)    { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
+            if (g_fault_brownout) { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
 
             // --- Completion: planner finished AND encoder near target ---
             if (!s_running) break; // fault already set
             if (planner.isComplete() && fabsf(g_meas_pos - target) < 30.0f) {
-                stopReason = "Completed";
+                strncpy(stopReason, "Completed", 31);
                 s_running  = false;
             }
 
@@ -253,7 +253,7 @@ static void PlannerTask(void *) {
         // ---- Clean exit ----
         // Debug checkpoints: plain ASCII lines the Python parser ignores (not 0xAA-prefixed).
         // These reveal exactly which step blocks or crashes on a timeout.
-        Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason.c_str());
+        Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason);
 
         stepgen::halt();
         vTaskDelay(pdMS_TO_TICKS(100)); // settle before disabling driver
@@ -264,7 +264,7 @@ static void PlannerTask(void *) {
 
         if (s_telemetry) {
             Serial1.printf("DBG:STOP_SENDING pos=%ld\n", (long)g_meas_pos);
-            s_telemetry->sendStop(stopReason.c_str(), (long)g_meas_pos);
+            s_telemetry->sendStop(stopReason, (long)g_meas_pos);
             Serial1.printf("DBG:STOP_SENT\n");
         }
     }
