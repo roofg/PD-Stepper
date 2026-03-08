@@ -127,7 +127,7 @@ public:
             targetAcc = -(currentVel - sExitVel) * 10.0f;
             if (fabsf(targetAcc) > maxA)
                 targetAcc = (targetAcc > 0) ? maxA : -maxA;
-        } else if (distToTarget < stoppingDist + fabsf(currentVel) * 0.02f ||
+        } else if (distToTarget < stoppingDist + fmaxf(0.0f, fabsf(currentVel) - exitVelocity) * 0.02f ||
                    fabsf(currentVel) > approachVel) {
             // Braking needed
             targetAcc = (currentVel > 0) ? -maxA : maxA;
@@ -295,9 +295,11 @@ static void PlannerTask(void *) {
             if (!s_running) break; // fault already set
 
             // --- Completion check ---
-            if (planner.isComplete() && fabsf(g_meas_pos - target) < 30.0f) {
+            if (planner.isComplete()) {
                 if (cmd.chain) {
-                    // Try to dequeue the next command for a chained transition
+                    // Try to dequeue the next command for a chained transition.
+                    // Chain transitions are based on planner completion only — the encoder
+                    // will track the handoff point via PD control.
                     MotionCommand nextCmd;
                     if (xQueueReceive(s_motionQueue, &nextCmd, 0) == pdPASS) {
                         // Compute the junction velocity for the NEW move (after nextCmd)
@@ -345,9 +347,12 @@ static void PlannerTask(void *) {
                     // Queue was empty by the time we tried to dequeue — fall through to normal stop
                 }
 
-                // Normal (unchained or last in chain) completion
-                strncpy(stopReason, "Completed", 31);
-                s_running  = false;
+                // Non-chain or queue-empty: confirm with encoder before declaring done.
+                // (Prevents premature stop if the encoder is still catching up.)
+                if (fabsf(g_meas_pos - target) < 30.0f) {
+                    strncpy(stopReason, "Completed", 31);
+                    s_running  = false;
+                }
             }
 
             // Wait for next 2 ms period (500 Hz)
