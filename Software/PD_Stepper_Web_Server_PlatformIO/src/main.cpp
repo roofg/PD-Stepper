@@ -38,7 +38,7 @@ String standstillMode = "NORMAL";
 
 // Arduino framwork setup defaultly runs on core 1
 void setup() {
-  esp_task_wdt_delete(NULL); // Stop monitoring loopTask
+  esp_task_wdt_reset(); // Feed WDT — loopTask is registered by Arduino framework
   // PD Trigger Setup
   pinMode(PD_PG, INPUT);
   pinMode(PD_CFG1, OUTPUT);
@@ -263,6 +263,7 @@ void processSerialCommands() {
 }
 
 void loop() {
+  esp_task_wdt_reset(); // Feed watchdog — loopTask is monitored by the Arduino WDT
   processSerialCommands();
 
   static uint32_t lastPrintTime = 0;

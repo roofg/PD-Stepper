@@ -140,8 +140,7 @@ public:
 // priority means a blocked USB CDC TX FIFO only stalls this task, not the
 // 1 kHz ControlTask on Core 1.
 // ---------------------------------------------------------------------------
-static void TelemetryTask(void *) {
-    TelemetryData d;
+static void TelemetryTask(void *) {    TelemetryData d;
     for (;;) {
         if (xQueueReceive(s_teleQueue, &d, portMAX_DELAY) == pdPASS) {
             if (s_telemetry) s_telemetry->sendTelemetry(d);
@@ -160,7 +159,8 @@ static void TelemetryTask(void *) {
 //   • Detect move completion; handle all TMC enable/disable calls
 // ---------------------------------------------------------------------------
 static void PlannerTask(void *) {
-    esp_task_wdt_delete(NULL);
+    // PlannerTask is not registered with the task WDT (only the Arduino loopTask
+    // is registered by default). The delete call was a no-op and is removed.
 
     MotionCommand cmd;
     TrajectoryPlanner planner;
@@ -286,7 +286,8 @@ static void PlannerTask(void *) {
 // permitted.
 // ---------------------------------------------------------------------------
 static void ControlTask(void *) {
-    esp_task_wdt_delete(NULL);
+    // ControlTask is not registered with the task WDT by default.
+    // The delete call was a no-op and is removed.
 
     PDController pd;
     TrajectoryPoint ref = {0.0f, 0.0f, 0.0f};
