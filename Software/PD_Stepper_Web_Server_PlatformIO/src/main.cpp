@@ -26,12 +26,11 @@ float VBusVoltage = 0;
 const float DIV_RATIO = 0.1189427313; // 20k/2.7k voltage divider
 
 // Persistent settings (loaded from Preferences on boot, saved by "save" command)
-String enabled1       = "enabled";
-String setVoltage     = "20";
-String microsteps     = "32";
-String current        = "50";
-String stallThreshold = "10";
-String standstillMode = "NORMAL";
+static int   setVoltage     = 20;
+static int   setMicrosteps  = 32;
+static int   setCurrent     = 50;
+static int   setStall       = 10;
+static char  standstillMode[16] = "NORMAL";
 
 // Note: button debounce and open-loop position control variables have been
 // removed — the new motion architecture handles all motion via serial commands.
@@ -150,8 +149,8 @@ void setup() {
   // Inject telemetry transport — swap to &wifiTelemetry to switch providers.
   motion::setTelemetryProvider(&usbTelemetry);
   motion::init();
-  motion::setMicrosteps(microsteps.toInt());
-  motion::setConfiguredVoltage((float)setVoltage.toInt()); // derive brownout threshold
+  motion::setMicrosteps(setMicrosteps);
+  motion::setConfiguredVoltage((float)setVoltage); // derive brownout threshold
 
   Serial1.println("Setup complete");
 }
@@ -200,36 +199,33 @@ void processSerialCommands() {
             Serial1.printf("Set PD (legacy set_pid) - Kp: %.4f, Kd: %.4f\n", kp, kd);
 
           } else if (strcmp(cmd, "set_voltage") == 0) {
-            const char *v = doc["value"] | "20";
-            setVoltage = String(v);
+            setVoltage = doc["value"] | 20;
             configureSettings();
-            motion::setConfiguredVoltage((float)setVoltage.toInt());
-            Serial1.printf("Set voltage: %s V\n", v);
+            motion::setConfiguredVoltage((float)setVoltage);
+            Serial1.printf("Set voltage: %d V\n", setVoltage);
 
           } else if (strcmp(cmd, "set_current") == 0) {
-            int c = doc["value"] | 50;
-            current = String(c);
-            tmc::setRunCurrent(c);
-            Serial1.printf("Set current: %d%%\n", c);
+            setCurrent = doc["value"] | 50;
+            tmc::setRunCurrent(setCurrent);
+            Serial1.printf("Set current: %d%%\n", setCurrent);
 
           } else if (strcmp(cmd, "set_microsteps") == 0) {
-            int ms = doc["value"] | 32;
-            microsteps = String(ms);
-            tmc::setMicrostepsPerStep(ms);
-            motion::setMicrosteps(ms);
-            Serial1.printf("Set microsteps: %d\n", ms);
+            setMicrosteps = doc["value"] | 32;
+            tmc::setMicrostepsPerStep(setMicrosteps);
+            motion::setMicrosteps(setMicrosteps);
+            Serial1.printf("Set microsteps: %d\n", setMicrosteps);
 
           } else if (strcmp(cmd, "set_stall_threshold") == 0) {
-            int th = doc["value"] | 10;
-            stallThreshold = String(th);
-            tmc::setStallGuardThreshold(th);
-            Serial1.printf("Set stall threshold: %d\n", th);
+            setStall = doc["value"] | 10;
+            tmc::setStallGuardThreshold(setStall);
+            Serial1.printf("Set stall threshold: %d\n", setStall);
 
           } else if (strcmp(cmd, "set_standstill_mode") == 0) {
             const char *mode = doc["value"] | "NORMAL";
-            standstillMode = String(mode);
+            strncpy(standstillMode, mode, sizeof(standstillMode) - 1);
+            standstillMode[sizeof(standstillMode) - 1] = '\0';
             configureSettings();
-            Serial1.printf("Set standstill mode: %s\n", mode);
+            Serial1.printf("Set standstill mode: %s\n", standstillMode);
 
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();
@@ -237,10 +233,10 @@ void processSerialCommands() {
 
           } else if (strcmp(cmd, "get_settings") == 0) {
             Serial1.printf(
-                "{\"voltage\":\"%s\",\"current\":\"%s\",\"microsteps\":\"%s\","
-                "\"stall_threshold\":\"%s\",\"standstill_mode\":\"%s\"}\n",
-                setVoltage.c_str(), current.c_str(), microsteps.c_str(),
-                stallThreshold.c_str(), standstillMode.c_str());
+                "{\"voltage\":%d,\"current\":%d,\"microsteps\":%d,"
+                "\"stall_threshold\":%d,\"standstill_mode\":\"%s\"}\n",
+                setVoltage, setCurrent, setMicrosteps,
+                setStall, standstillMode);
 
           } else if (strcmp(cmd, "telemetry") == 0) {
             bool enabled = doc["enabled"] | false;
@@ -288,72 +284,71 @@ void loop() {
 /// @brief Setting pin combination negotiates USB-PD voltage. This voltage is
 /// passed to the TMC driver as motor supply voltage.
 void configureSettings() {
-  if (setVoltage == "5") {
+  // CH224K CFG pins select USB-PD negotiated voltage
+  if (setVoltage == 5) {
     digitalWrite(PD_CFG1, HIGH);
-  } else if (setVoltage == "9") {
+    digitalWrite(PD_CFG2, LOW);
+    digitalWrite(PD_CFG3, LOW);
+  } else if (setVoltage == 9) {
     digitalWrite(PD_CFG1, LOW);
     digitalWrite(PD_CFG2, LOW);
     digitalWrite(PD_CFG3, LOW);
-  } else if (setVoltage == "12") {
+  } else if (setVoltage == 12) {
     digitalWrite(PD_CFG1, LOW);
     digitalWrite(PD_CFG2, LOW);
     digitalWrite(PD_CFG3, HIGH);
-  } else if (setVoltage == "15") {
+  } else if (setVoltage == 15) {
     digitalWrite(PD_CFG1, LOW);
     digitalWrite(PD_CFG2, HIGH);
     digitalWrite(PD_CFG3, HIGH);
-  } else if (setVoltage == "20") {
+  } else if (setVoltage == 20) {
     digitalWrite(PD_CFG1, LOW);
     digitalWrite(PD_CFG2, HIGH);
     digitalWrite(PD_CFG3, LOW);
   }
 
-  tmc::setRunCurrent(current.toInt());
-  tmc::setMicrostepsPerStep(microsteps.toInt());
-  tmc::setStallGuardThreshold(stallThreshold.toInt());
+  tmc::setRunCurrent(setCurrent);
+  tmc::setMicrostepsPerStep(setMicrosteps);
+  tmc::setStallGuardThreshold(setStall);
 
-  if (standstillMode == "NORMAL") {
-    tmc::setStandstillMode(0);
-  } // map modes in driver
-  else if (standstillMode == "FREEWHEELING") {
+  if (strcmp(standstillMode, "FREEWHEELING") == 0) {
     tmc::setStandstillMode(1);
-  } else if (standstillMode == "BRAKING") {
+  } else if (strcmp(standstillMode, "BRAKING") == 0) {
     tmc::setStandstillMode(2);
-  } else if (standstillMode == "STRONG_BRAKING") {
+  } else if (strcmp(standstillMode, "STRONG_BRAKING") == 0) {
     tmc::setStandstillMode(3);
+  } else {
+    tmc::setStandstillMode(0); // NORMAL (default)
   }
 }
 
 void readSettings() {
   preferences.begin("settings", false);
-  enabled1 = preferences.getString("enable", "");
-  if (enabled1 == "") {
+  bool hasSettings = preferences.isKey("voltage");
+  if (!hasSettings) {
     preferences.end();
-    enabled1 = "enabled";
-    setVoltage = "20";
-    microsteps = "32";
-    current = "50";
-    stallThreshold = "10";
-    standstillMode = "NORMAL";
+    // Defaults already assigned by initializers — persist them
     writeSettings();
+    Serial1.println("No settings found — writing defaults");
   } else {
     Serial1.println("Settings found in EEPROM");
-    setVoltage     = preferences.getString("voltage",       "20");
-    microsteps     = preferences.getString("microsteps",    "32");
-    current        = preferences.getString("current",       "50");
-    stallThreshold = preferences.getString("stallThreshold","10");
-    standstillMode = preferences.getString("standstillMode","NORMAL");
+    setVoltage    = preferences.getInt("voltage",        20);
+    setMicrosteps = preferences.getInt("microsteps",     32);
+    setCurrent    = preferences.getInt("current",        50);
+    setStall      = preferences.getInt("stallThreshold", 10);
+    String mode   = preferences.getString("standstillMode", "NORMAL");
+    strncpy(standstillMode, mode.c_str(), sizeof(standstillMode) - 1);
+    standstillMode[sizeof(standstillMode) - 1] = '\0';
     preferences.end();
   }
 }
 
 void writeSettings() {
   preferences.begin("settings", false);
-  preferences.putString("enable", enabled1);
-  preferences.putString("voltage", setVoltage);
-  preferences.putString("microsteps", microsteps);
-  preferences.putString("current", current);
-  preferences.putString("stallThreshold", stallThreshold);
+  preferences.putInt("voltage",        setVoltage);
+  preferences.putInt("microsteps",     setMicrosteps);
+  preferences.putInt("current",        setCurrent);
+  preferences.putInt("stallThreshold", setStall);
   preferences.putString("standstillMode", standstillMode);
   Serial1.println("Saving settings to flash");
   preferences.end();
