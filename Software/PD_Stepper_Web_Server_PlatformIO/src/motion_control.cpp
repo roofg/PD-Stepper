@@ -105,40 +105,65 @@ public:
         float distToTarget = fabsf(targetPos - currentPos);
         bool  forward      = (targetPos > currentPos);
 
-        // Stopping distance to reach exitVelocity (not necessarily 0).
-        // stoppingDist = (v^2 - exitVel^2) / (2 * maxA)
-        float excessVelSq  = currentVel * currentVel - exitVelocity * exitVelocity;
-        float stoppingDist = (excessVelSq > 0.0f) ? (excessVelSq / (2.0f * maxA)) : 0.0f;
+        float targetAcc = 0.0f;
 
-        // Scale approach velocity linearly with distance near target.
-        // Floor at exitVelocity so we don't overshoot the chain handoff point.
-        float approachVel = maxV;
-        if (distToTarget < 500.0f) {
-            approachVel = distToTarget * 10.0f + exitVelocity;
-            if (approachVel < exitVelocity + 5.0f) approachVel = exitVelocity + 5.0f;
-            if (approachVel > maxV)                approachVel = maxV;
-        }
+        if (exitVelocity > 0.0f) {
+            // ---- Chain handoff mode ----
+            // Accelerate to maxV, brake to exitVelocity, then coast through targetPos.
+            // isComplete() fires when the planner position crosses targetPos at ~exitVelocity.
+            float spd = fabsf(currentVel);
+            bool  dirAligned = moveForward ? (currentVel >= 0.0f) : (currentVel <= 0.0f);
 
-        float sExitVel = signedExitVel(); // correctly-signed for this move's direction
+            if (!dirAligned) {
+                // Moving in the wrong direction — brake unconditionally.
+                targetAcc = (currentVel > 0) ? -maxA : maxA;
+            } else {
+                float excessVel = spd - exitVelocity;
+                if (excessVel > 5.0f) {
+                    // Above exit velocity: brake if we won't reach exitVelocity by target.
+                    // stoppingDist = (v^2 - ev^2)/(2a) = (v-ev)(v+ev)/(2a)
+                    float stoppingDist = excessVel * (spd + exitVelocity) / (2.0f * maxA);
+                    if (distToTarget < stoppingDist + excessVel * 0.02f) {
+                        targetAcc = (currentVel > 0) ? -maxA : maxA; // brake toward exit vel
+                    } else if (spd < maxV) {
+                        targetAcc = moveForward ? maxA : -maxA;       // accelerate to cruise
+                    }
+                    // else: cruise at maxV — targetAcc stays 0
+                } else if (spd < exitVelocity - 5.0f) {
+                    // Below exit velocity (handles start-from-rest and jerk undershoot):
+                    // accelerate back up toward exitVelocity.
+                    targetAcc = moveForward ? maxA : -maxA;
+                }
+                // else: within ±5 steps/s of exitVelocity — coast through target.
+            }
 
-        float targetAcc = 0;
-        if (distToTarget < 2.0f && fabsf(currentVel - sExitVel) < 20.0f) {
-            // Close enough to target and near exit velocity: damp toward sExitVel
-            targetAcc = -(currentVel - sExitVel) * 10.0f;
-            if (fabsf(targetAcc) > maxA)
-                targetAcc = (targetAcc > 0) ? maxA : -maxA;
-        } else if (distToTarget < stoppingDist + fmaxf(0.0f, fabsf(currentVel) - exitVelocity) * 0.02f ||
-                   fabsf(currentVel) > approachVel) {
-            // Braking needed
-            targetAcc = (currentVel > 0) ? -maxA : maxA;
         } else {
-            // Accelerate toward target
-            if (fabsf(currentVel) < approachVel)
-                targetAcc = forward ? maxA : -maxA;
-            // else cruise at approachVel
+            // ---- Full-stop mode ----
+            // Classic trapezoidal / S-curve decelerate to 0 at targetPos.
+            float stoppingDist = (currentVel * currentVel) / (2.0f * maxA);
+
+            float approachVel = maxV;
+            if (distToTarget < 500.0f) {
+                approachVel = distToTarget * 10.0f;
+                if (approachVel < 5.0f)  approachVel = 5.0f;
+                if (approachVel > maxV)  approachVel = maxV;
+            }
+
+            if (distToTarget < 2.0f && fabsf(currentVel) < 20.0f) {
+                // Damping zone: servo currentVel toward 0
+                targetAcc = -currentVel * 10.0f;
+                if (fabsf(targetAcc) > maxA)
+                    targetAcc = (targetAcc > 0) ? maxA : -maxA;
+            } else if (distToTarget < stoppingDist + fabsf(currentVel) * 0.02f ||
+                       fabsf(currentVel) > approachVel) {
+                targetAcc = (currentVel > 0) ? -maxA : maxA; // brake toward 0
+            } else {
+                if (fabsf(currentVel) < approachVel)
+                    targetAcc = forward ? maxA : -maxA;       // accelerate to approach vel
+            }
         }
 
-        // Apply jerk limit (S-curve)
+        // Apply jerk limit (S-curve smoothing)
         if (currentAcc < targetAcc) {
             currentAcc += jerk * dt;
             if (currentAcc > targetAcc) currentAcc = targetAcc;
@@ -155,8 +180,15 @@ public:
     }
 
     bool isComplete() const {
-        return fabsf(targetPos - currentPos) < 2.0f &&
-               fabsf(currentVel - signedExitVel()) < 20.0f;
+        if (exitVelocity > 0.0f) {
+            // Chain mode: fire when the planner position crosses the handoff point at
+            // approximately the junction velocity. 100-step/s tolerance covers
+            // jerk-induced velocity undershoot (~40 steps/s typical at maxA=9000).
+            bool crossed = moveForward ? (currentPos >= targetPos) : (currentPos <= targetPos);
+            return crossed && fabsf(currentVel - signedExitVel()) < 100.0f;
+        }
+        // Full-stop mode: within 2 steps of target, nearly stationary.
+        return fabsf(targetPos - currentPos) < 2.0f && fabsf(currentVel) < 20.0f;
     }
 };
 
@@ -317,8 +349,12 @@ static void PlannerTask(void *) {
                                 bool afterForward = (afterTarget > nextTarget);
                                 if (nextForward == afterForward) {
                                     nextJunctionVel = fminf(nextCmd.maxSpeed, afterNext.maxSpeed);
-                                    float afterDist    = fabsf(afterTarget - nextTarget);
-                                    float maxSafeEntry = sqrtf(2.0f * afterNext.acceleration * afterDist);
+                                    float afterDist = fabsf(afterTarget - nextTarget);
+                                    // Reserve 2 planner ticks at max junction speed so the motor
+                                    // can stop within the next segment even if isComplete() fires
+                                    // one tick late (crossing delay ~10 steps at 5000 steps/s).
+                                    float safeAfterDist = fmaxf(0.0f, afterDist - nextJunctionVel * 0.004f);
+                                    float maxSafeEntry  = sqrtf(2.0f * afterNext.acceleration * safeAfterDist);
                                     if (nextJunctionVel > maxSafeEntry) nextJunctionVel = maxSafeEntry;
                                 }
                             }
