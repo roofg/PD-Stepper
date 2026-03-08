@@ -43,7 +43,7 @@ void read() {
     return; // Fast fail if I2C busy
   }
 
-  if (xSemaphoreTake(encoderMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+  if (xSemaphoreTake(encoderMutex, pdMS_TO_TICKS(1)) == pdTRUE) {
     // Handle full revolutions clockwise and anti clockwise
     if (prev_raw_counts > 3000 && raw_counts < 1000) {
       revolutions++;

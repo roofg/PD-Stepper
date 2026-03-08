@@ -95,7 +95,7 @@ void setup() {
 
   // AS5600 Hall Encoder Setup
   encoder::init();
-  encoder::startTask(5, 5); // 200 Hz (5 ms interval), priority 5
+  encoder::startTask(5, 1); // 1 kHz (1 ms interval) — AS5600 I2C read ~40µs at 400kHz
 
   // ADC Setup
   analogSetPinAttenuation(VBUS, ADC_11db);
