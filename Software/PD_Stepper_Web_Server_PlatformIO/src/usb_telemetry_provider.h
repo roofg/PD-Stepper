@@ -18,8 +18,9 @@
  *   20      2     vel        (int16_t, steps/s)
  *   22      2     p_acc      (int16_t, steps/s^2)
  *   24      2     p_dist     (int16_t, steps remaining)
- *   26      1     checksum   (XOR of bytes 2..25)
- *        Total = 27 bytes per telemetry packet
+ *   26      2     sg_result  (uint16_t, stallguard result)
+ *   28      1     checksum   (XOR of bytes 2..27)
+ *        Total = 29 bytes per telemetry packet
  *
  * STOP packets:
  *   Offset  Size  Field
@@ -39,7 +40,7 @@ public:
   void sendTelemetry(const TelemetryData &d) override {
     // Pack header + payload into a stack-local buffer and write in one call
     // to minimise the number of USB transactions.
-    uint8_t buf[27];
+    uint8_t buf[29];
     buf[0] = 0xAA;
     buf[1] = 0xBB;
 
@@ -51,6 +52,7 @@ public:
     int16_t vel = (int16_t)d.vel;
     int16_t acc = (int16_t)d.p_acc;
     int16_t dist = (int16_t)d.p_dist;
+    uint16_t sg = (uint16_t)d.sg_result;
 
     memcpy(&buf[2], &ts, 4);
     memcpy(&buf[6], &pos, 4);
@@ -60,12 +62,13 @@ public:
     memcpy(&buf[20], &vel, 2);
     memcpy(&buf[22], &acc, 2);
     memcpy(&buf[24], &dist, 2);
+    memcpy(&buf[26], &sg, 2);
 
-    // Simple XOR checksum over the payload bytes (offsets 2–25)
+    // Simple XOR checksum over the payload bytes (offsets 2–27)
     uint8_t chk = 0;
-    for (int i = 2; i < 26; i++)
+    for (int i = 2; i < 28; i++)
       chk ^= buf[i];
-    buf[26] = chk;
+    buf[28] = chk;
 
     USBSerial.write(buf, sizeof(buf));
   }

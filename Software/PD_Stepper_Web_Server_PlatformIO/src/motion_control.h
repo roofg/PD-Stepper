@@ -19,6 +19,11 @@ struct MotionCommand {
 void setTelemetryProvider(TelemetryProvider *provider);
 
 /**
+ * @brief Set the PID values for the motion controller.
+ */
+void setPID(float kp, float ki);
+
+/**
  * @brief Initialize the motion control system, including the command queue and
  * Core 1 task.
  */

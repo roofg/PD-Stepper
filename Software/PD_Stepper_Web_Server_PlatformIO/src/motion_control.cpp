@@ -148,11 +148,11 @@ public:
 // =================================================================================
 // 2. PID Controller (Velocity Correction)
 // =================================================================================
+static float g_kp = 3.0f;
+static float g_ki = 0.05f;
+
 class PIDController {
 public:
-  float Kp =
-      3.0f; // Reduced to 3.0 to prevent vibration/binding at high voltage
-  float Ki = 0.05f; // Increased to 0.05 for fast equalization
   float integrator = 0;
   float maxInteg = 2000.0f; // Max Integral windup (steps/sec correction)
 
@@ -164,13 +164,13 @@ public:
       error = 0.0f; // Deadband to stop hunting
 
     // Integral
-    integrator += error * dt * Ki * 1000.0f; // Scale factor
+    integrator += error * dt * g_ki * 1000.0f; // Scale factor
     if (integrator > maxInteg)
       integrator = maxInteg;
     if (integrator < -maxInteg)
       integrator = -maxInteg;
 
-    float output = (error * Kp) + integrator;
+    float output = (error * g_kp) + integrator;
 
     // Limit Output
     // Don't let correction exceed 20% of max speed (safety)
@@ -356,6 +356,7 @@ void MotionTask(void *pvParameters) {
             tData.vel = (int)planner.currentVel;
             tData.p_acc = (int)planner.currentAcc;
             tData.p_dist = (int)(planner.targetPos - planner.currentPos);
+            tData.sg_result = (uint16_t)tmc::getStallGuardResult();
             telemetryProvider->sendTelemetry(tData);
           }
         }
@@ -403,5 +404,10 @@ bool addCommand(long distance, float acceleration, float maxSpeed,
 }
 
 bool isRunning() { return running; }
+
+void setPID(float kp, float ki) {
+  g_kp = kp;
+  g_ki = ki;
+}
 
 } // namespace motion

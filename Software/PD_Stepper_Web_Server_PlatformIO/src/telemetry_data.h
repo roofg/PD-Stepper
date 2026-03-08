@@ -16,6 +16,7 @@ struct TelemetryData {
   int vel;
   int p_acc;
   int p_dist;
+  uint16_t sg_result;
 };
 
 #endif

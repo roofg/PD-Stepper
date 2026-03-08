@@ -6,9 +6,9 @@ import time
 
 TELE_HEADER      = (0xAA, 0xBB)
 STOP_HEADER      = (0xAA, 0xCC)
-TELE_PACKET_LEN  = 27
+TELE_PACKET_LEN  = 29
 STOP_PACKET_LEN  = 38
-TELE_FMT         = "<IiiihhhhB"  # uint32, int32×3, int16×4, uint8
+TELE_FMT         = "<IiiihhhhHB"  # uint32, int32×3, int16×4, uint16, uint8
 STOP_FMT         = "<i32s"       # int32, char[32]
 def move(ser: serial.Serial):
     # Move 1: Relative movement (1 full rotation at 32 microsteps)
@@ -34,12 +34,12 @@ def move(ser: serial.Serial):
                     pkt = buf[:TELE_PACKET_LEN]
                     
                     chk = 0
-                    for b in pkt[2:26]: chk ^= b
-                    if chk == pkt[26]:
+                    for b in pkt[2:28]: chk ^= b
+                    if chk == pkt[28]:
                         fields = struct.unpack(TELE_FMT, bytes(pkt[2:]))
-                        ts, pos, meas, target, lag, vel, p_acc, p_dist, _ = fields
+                        ts, pos, meas, target, lag, vel, p_acc, p_dist, sg_result, _ = fields
                         time_s = ts / 1000000.0
-                        print(f"[{time_s:7.2f}s] P:{pos:6} M:{meas:6} T:{target:6} L:{lag:4} V:{vel:5}")
+                        print(f"[{time_s:7.2f}s] P:{pos:6} M:{meas:6} T:{target:6} L:{lag:4} V:{vel:5} SG:{sg_result:4}")
                     
                     buf = buf[TELE_PACKET_LEN:]
                     

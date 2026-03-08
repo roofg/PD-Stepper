@@ -11,7 +11,6 @@
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
-
 Preferences preferences;
 
 // Telemetry provider (USB binary — swappable via TelemetryProvider interface)
@@ -272,6 +271,11 @@ void processSerialCommands() {
                      doc["cmd"] == "telemetry") {
             bool enabled = doc["enabled"] | false;
             USBSerial.printf("Telemetry Command: %s\n", enabled ? "ON" : "OFF");
+          } else if (doc["cmd"].is<const char *>() && doc["cmd"] == "set_pid") {
+            float kp = doc["kp"] | 3.0f;
+            float ki = doc["ki"] | 0.05f;
+            motion::setPID(kp, ki);
+            USBSerial.printf("Set PID - Kp: %.4f, Ki: %.4f\n", kp, ki);
           }
         } else {
           USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());
