@@ -276,6 +276,7 @@ static void ControlTask(void *) {
 
     uint32_t lastTeleMs   = millis();
     long     lastTeleEnc  = 0;
+    uint8_t  estopCount   = 0; // consecutive LOW reads needed to trip E-stop
 
     TickType_t xLastWake  = xTaskGetTickCount();
 
@@ -312,10 +313,15 @@ static void ControlTask(void *) {
         float velocity_cmd = ref.vel + correction;
         stepgen::setVelocity(velocity_cmd);
 
-        // --- E-Stop (SW1 button — active LOW) ---
+        // --- E-Stop (SW1 button — active LOW, debounced over 5 consecutive 1ms ticks) ---
+        // A single glitch at 1 kHz sampling would otherwise trip an irreversible fault.
         if (digitalRead(SW1_PIN) == LOW) {
-            g_fault_estop = true;
-            stepgen::halt();
+            if (++estopCount >= 5) {
+                g_fault_estop = true;
+                stepgen::halt();
+            }
+        } else {
+            estopCount = 0;
         }
 
         // --- Lag fault: encoder position has drifted too far from reference ---
