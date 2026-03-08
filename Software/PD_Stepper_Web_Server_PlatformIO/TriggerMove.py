@@ -33,6 +33,9 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
     print(f"  {'Time':>6}  {'Target':>8}  {'Measured':>9}  {'Lag':>6}  {'Vel':>7}")
     print(f"  {'-'*6}  {'-'*8}  {'-'*9}  {'-'*6}  {'-'*7}")
 
+    # Accumulate a text line buffer for firmware debug prints (DBG:... lines)
+    text_line = bytearray()
+
     while time.time() - start < timeout:
         chunk = ser.read(ser.in_waiting or 1)
         if not chunk:
@@ -40,8 +43,19 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
         buf.extend(chunk)
 
         while len(buf) >= 2:
+            # Collect ASCII text until newline for firmware debug lines
             if buf[0] != 0xAA:
+                ch = buf[0]
                 buf = buf[1:]
+                if ch == ord('\n'):
+                    line = text_line.decode("ascii", errors="replace").strip()
+                    if line:
+                        print(f"  [FW] {line}")
+                    text_line = bytearray()
+                elif ch >= 0x20:  # printable ASCII
+                    text_line.append(ch)
+                else:
+                    text_line = bytearray()
                 continue
 
             if buf[1] == TELE_HEADER[1]:
@@ -85,12 +99,14 @@ def main():
 
     print(f"Connecting to {args.port} at 921600 baud...")
     try:
-        ser = serial.Serial(args.port, 921600, timeout=0.1)
+        # dsrdtr=True keeps DTR/DSR lines stable — prevents the ESP32 from
+        # resetting when pyserial toggles DTR on port open/close.
+        ser = serial.Serial(args.port, 921600, timeout=0.1, dsrdtr=True)
     except Exception as e:
         print(f"ERROR: {e}")
         return
 
-    time.sleep(1.5)  # wait for ESP32 to settle after USB connect
+    time.sleep(0.1)  # brief flush before clearing stale bytes
     ser.reset_input_buffer()
 
     cmd = {

@@ -216,12 +216,21 @@ static void PlannerTask(void *) {
         }
 
         // ---- Clean exit ----
+        // Debug checkpoints: plain ASCII lines the Python parser ignores (not 0xAA-prefixed).
+        // These reveal exactly which step blocks or crashes on a timeout.
+        Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason.c_str());
+
         stepgen::halt();
         vTaskDelay(pdMS_TO_TICKS(100)); // settle before disabling driver
+
+        Serial1.printf("DBG:TMC_DISABLE_START\n");
         tmc::disable();
+        Serial1.printf("DBG:TMC_DISABLE_DONE\n");
 
         if (s_telemetry) {
+            Serial1.printf("DBG:STOP_SENDING pos=%ld\n", (long)g_meas_pos);
             s_telemetry->sendStop(stopReason.c_str(), (long)g_meas_pos);
+            Serial1.printf("DBG:STOP_SENT\n");
         }
     }
 }

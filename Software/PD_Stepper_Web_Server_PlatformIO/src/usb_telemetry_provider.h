@@ -86,6 +86,8 @@ public:
     strncpy((char *)&buf[6], reason, 31);
 
     USBSerial.write(buf, sizeof(buf));
-    USBSerial.flush();
+    // Do NOT call flush() here — on ESP32-S3 USB CDC, flush() can corrupt the
+    // TX buffer, dropping bytes that were already queued (including this packet).
+    // The CDC driver will send the data automatically within ~1 ms.
   }
 };

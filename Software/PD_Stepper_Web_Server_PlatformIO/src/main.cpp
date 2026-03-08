@@ -111,11 +111,16 @@ void setup() {
 
   configureSettings(); // use saved settings
 
-  // Set up USB Serial for monitoring with pio
-  USBSerial.begin(921600); // Must match StepperClientUSB.py --baud
+  // AUX UART — all human-readable debug output goes here (Serial1), keeping
+  // USBSerial strictly for binary telemetry packets + JSON command input.
+  // AUX1 (GPIO 14) = TX from ESP32; AUX2 (GPIO 13) = RX into ESP32.
+  // Connect a USB-UART adapter to AUX1+GND to read debug output.
+  Serial1.begin(115200, SERIAL_8N1, AUX2, AUX1);
+
+  // USB CDC — binary protocol only (no text written to USBSerial anywhere).
+  USBSerial.begin(921600); // Must match TriggerMove.py --baud
   delay(500);              // Short stabilization time
-  USBSerial.println("\r\n[SERIAL] Ready");
-  USBSerial.flush();
+  Serial1.println("\r\n[SERIAL] Ready");
 
   // Reset reason and boot counter
   esp_reset_reason_t reason = esp_reset_reason();
@@ -125,41 +130,41 @@ void setup() {
   preferences.putUInt("boot_count", bootCount);
   preferences.end();
 
-  USBSerial.printf("\r\n--- SYSTEM BOOT #%u ---\r\n", bootCount);
-  USBSerial.print("Reset Reason: ");
+  Serial1.printf("\r\n--- SYSTEM BOOT #%u ---\r\n", bootCount);
+  Serial1.print("Reset Reason: ");
   switch (reason) {
   case ESP_RST_POWERON:
-    USBSerial.println("Power-on");
+    Serial1.println("Power-on");
     break;
   case ESP_RST_EXT:
-    USBSerial.println("External Pin");
+    Serial1.println("External Pin");
     break;
   case ESP_RST_SW:
-    USBSerial.println("Software Reset");
+    Serial1.println("Software Reset");
     break;
   case ESP_RST_PANIC:
-    USBSerial.println("Software Panic");
+    Serial1.println("Software Panic");
     break;
   case ESP_RST_INT_WDT:
-    USBSerial.println("Interrupt Watchdog");
+    Serial1.println("Interrupt Watchdog");
     break;
   case ESP_RST_TASK_WDT:
-    USBSerial.println("Task Watchdog");
+    Serial1.println("Task Watchdog");
     break;
   case ESP_RST_WDT:
-    USBSerial.println("Other Watchdog");
+    Serial1.println("Other Watchdog");
     break;
   case ESP_RST_DEEPSLEEP:
-    USBSerial.println("Deep Sleep");
+    Serial1.println("Deep Sleep");
     break;
   case ESP_RST_BROWNOUT:
-    USBSerial.println("Brownout");
+    Serial1.println("Brownout");
     break;
   case ESP_RST_SDIO:
-    USBSerial.println("SDIO Reset");
+    Serial1.println("SDIO Reset");
     break;
   default:
-    USBSerial.println("Unknown");
+    Serial1.println("Unknown");
     break;
   }
 
@@ -175,7 +180,7 @@ void setup() {
   motion::init();
   motion::setMicrosteps(microsteps.toInt());
 
-  USBSerial.println("Setup complete");
+  Serial1.println("Setup complete");
 }
 
 void processSerialCommands() {
@@ -198,7 +203,7 @@ void processSerialCommands() {
             float accel = doc["accel"] | 1000.0f;
             float speed = doc["speed"] | 5000.0f;
             bool isAbs = doc["abs"] | false;
-            USBSerial.printf(
+            Serial1.printf(
                 "%s Command - Target/Dist: %ld, Accel: %.2f, Speed: %.2f\n",
                 isAbs ? "Absolute" : "Relative", dist, accel, speed);
             motion::addCommand(dist, accel, speed, isAbs);
@@ -206,58 +211,58 @@ void processSerialCommands() {
           } else if (strcmp(cmd, "set_phase_lead") == 0) {
             float kv = doc["kv"] | 0.0f;
             motion::setPhaseLeadGain(kv);
-            USBSerial.printf("Set phase lead gain Kv: %.4f\n", kv);
+            Serial1.printf("Set phase lead gain Kv: %.4f\n", kv);
 
           } else if (strcmp(cmd, "set_pd") == 0) {
             float kp = doc["kp"] | 3.0f;
             float kd = doc["kd"] | 0.1f;
             motion::setPD(kp, kd);
-            USBSerial.printf("Set PD - Kp: %.4f, Kd: %.4f\n", kp, kd);
+            Serial1.printf("Set PD - Kp: %.4f, Kd: %.4f\n", kp, kd);
 
           } else if (strcmp(cmd, "set_pid") == 0) {
             // Legacy alias: map ki → kd for backwards compat with scripts
             float kp = doc["kp"] | 3.0f;
             float kd = doc["kd"] | doc["ki"] | 0.1f;
             motion::setPD(kp, kd);
-            USBSerial.printf("Set PD (legacy set_pid) - Kp: %.4f, Kd: %.4f\n", kp, kd);
+            Serial1.printf("Set PD (legacy set_pid) - Kp: %.4f, Kd: %.4f\n", kp, kd);
 
           } else if (strcmp(cmd, "set_voltage") == 0) {
             const char *v = doc["value"] | "20";
             setVoltage = String(v);
             configureSettings();
-            USBSerial.printf("Set voltage: %s V\n", v);
+            Serial1.printf("Set voltage: %s V\n", v);
 
           } else if (strcmp(cmd, "set_current") == 0) {
             int c = doc["value"] | 50;
             current = String(c);
             tmc::setRunCurrent(c);
-            USBSerial.printf("Set current: %d%%\n", c);
+            Serial1.printf("Set current: %d%%\n", c);
 
           } else if (strcmp(cmd, "set_microsteps") == 0) {
             int ms = doc["value"] | 32;
             microsteps = String(ms);
             tmc::setMicrostepsPerStep(ms);
             motion::setMicrosteps(ms);
-            USBSerial.printf("Set microsteps: %d\n", ms);
+            Serial1.printf("Set microsteps: %d\n", ms);
 
           } else if (strcmp(cmd, "set_stall_threshold") == 0) {
             int th = doc["value"] | 10;
             stallThreshold = String(th);
             tmc::setStallGuardThreshold(th);
-            USBSerial.printf("Set stall threshold: %d\n", th);
+            Serial1.printf("Set stall threshold: %d\n", th);
 
           } else if (strcmp(cmd, "set_standstill_mode") == 0) {
             const char *mode = doc["value"] | "NORMAL";
             standstillMode = String(mode);
             configureSettings();
-            USBSerial.printf("Set standstill mode: %s\n", mode);
+            Serial1.printf("Set standstill mode: %s\n", mode);
 
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();
-            USBSerial.println("Settings saved to flash");
+            Serial1.println("Settings saved to flash");
 
           } else if (strcmp(cmd, "get_settings") == 0) {
-            USBSerial.printf(
+            Serial1.printf(
                 "{\"voltage\":\"%s\",\"current\":\"%s\",\"microsteps\":\"%s\","
                 "\"stall_threshold\":\"%s\",\"standstill_mode\":\"%s\"}\n",
                 setVoltage.c_str(), current.c_str(), microsteps.c_str(),
@@ -265,13 +270,13 @@ void processSerialCommands() {
 
           } else if (strcmp(cmd, "telemetry") == 0) {
             bool enabled = doc["enabled"] | false;
-            USBSerial.printf("Telemetry Command: %s\n", enabled ? "ON" : "OFF");
+            Serial1.printf("Telemetry Command: %s\n", enabled ? "ON" : "OFF");
 
           } else {
-            USBSerial.printf("Unknown command: %s\n", cmd);
+            Serial1.printf("Unknown command: %s\n", cmd);
           }
         } else {
-          USBSerial.printf("JSON Deserialization failed: %s\n", error.c_str());
+          Serial1.printf("JSON Deserialization failed: %s\n", error.c_str());
         }
         bufIndex = 0;
       }
@@ -294,10 +299,9 @@ void loop() {
     VBusVoltage = (vbus_mv / 1000.0f) / 0.1189427313f; // DIV_RATIO
     PGState = digitalRead(15);                         // PG pin
 
-    // Diagnostic output
-    USBSerial.printf("[SYSTEM] VBus: %.2fV, PG: %s, Core: %d\r\n", VBusVoltage,
+    // Diagnostic output to AUX UART (Serial1), not USB CDC
+    Serial1.printf("[SYSTEM] VBus: %.2fV, PG: %s, Core: %d\r\n", VBusVoltage,
                      PGState ? "FAIL" : "OK", xPortGetCoreID());
-    USBSerial.flush();
   }
 
   // Explicitly yield to reset the loopTask watchdog
@@ -358,7 +362,7 @@ void readSettings() {
     standstillMode = "NORMAL";
     writeSettings();
   } else {
-    USBSerial.println("Settings found in EEPROM");
+    Serial1.println("Settings found in EEPROM");
     setVoltage = preferences.getString("voltage", "");
     if (setVoltage == "12") {
       setVoltage = "20"; // Migration to higher PD voltage for test
@@ -384,7 +388,7 @@ void writeSettings() {
   preferences.putString("current", current);
   preferences.putString("stallThreshold", stallThreshold);
   preferences.putString("standstillMode", standstillMode);
-  USBSerial.println("Saving settings to flash");
+  Serial1.println("Saving settings to flash");
   preferences.end();
   configureSettings();
 }
