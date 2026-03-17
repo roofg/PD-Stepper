@@ -13,13 +13,47 @@ USBSerial is binary-only (telemetry packets). Do not mix them.
 - FT232RL TXD → leave unconnected (5V would damage ESP32 GPIO)
 - The FT232RL appears as COM4 on this machine (VID 0403 / PID 6001)
 
-## Open the monitor
+## Open the monitor (interactive)
 
 ```
 platformio device monitor --port COM4 --baud 115200
 ```
 
 Power-cycle the board after opening — boot messages fire before the terminal connects.
+
+## Read programmatically (Python)
+
+Use this when you need to capture output non-interactively (e.g., to extract a specific value or wait for a specific line). `pyserial` is available in the project venv (`requirements.txt`).
+
+```python
+import serial, time
+
+PORT = "COM4"
+BAUD = 115200
+TIMEOUT_SEC = 5  # how long to wait for the target line
+
+s = serial.Serial(PORT, BAUD, timeout=3, dsrdtr=True)
+time.sleep(0.2)  # let port settle
+
+deadline = time.time() + TIMEOUT_SEC
+lines = []
+while time.time() < deadline:
+    line = s.readline().decode("utf-8", errors="replace").strip()
+    if line:
+        lines.append(line)
+        if "[SYSTEM]" in line:  # change target pattern as needed
+            break
+s.close()
+
+for l in lines:
+    print(l)
+```
+
+Key parameters:
+- `dsrdtr=True` — prevents ESP32 reset on port open/close (critical)
+- `timeout=3` — readline will return after 3 s even if no newline arrives
+- Change `"[SYSTEM]"` to any other prefix (`"DBG:"`, `"ERR:"`, etc.) to wait for a different line type
+- Increase `TIMEOUT_SEC` if waiting for an event that takes longer (e.g., end of a move)
 
 ## Boot sequence
 
