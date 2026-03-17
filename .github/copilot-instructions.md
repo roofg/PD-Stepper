@@ -173,6 +173,67 @@ No ESPAsyncWebServer or WiFi libraries.
 - **Boot resets:** `pyserial` toggles DTR on open/close; use `dsrdtr=True` to suppress ESP32 resets between Python runs
 - **Time column:** Displays `micros()` from ESP32 in milliseconds — continuous within a boot, resets on reboot
 
+### Skill: Reading the AUX Debug Serial
+
+**Hardware (one-time setup):**
+- AUX1 (GPIO 14, ESP32 TX) → FT232RL **RXD**
+- GND → FT232RL **GND**
+- FT232RL **TXD** → **leave unconnected** (5V output would damage ESP32 GPIO)
+- The FT232RL appears as **COM4** on this machine (VID 0403 / PID 6001)
+
+**Open the monitor:**
+```
+platformio device monitor --port COM4 --baud 115200
+```
+
+**What you'll see on boot** (power the board via USB PD after opening the monitor):
+```
+--- SYSTEM BOOT #N ---
+Reset Reason: Power-on
+[SERIAL] Ready
+Setup complete
+```
+If you miss boot messages, power-cycle the board — the monitor does not cause a reset.
+
+**1 Hz system diagnostics** (continuous while running):
+```
+[SYSTEM] VBus: 20.05V, PG: OK, Core: 1
+```
+- `VBus` — measured VBUS voltage; should match requested PD voltage
+- `PG: OK` — USB PD Power Good; `PG: FAIL` means the PD negotiation failed or supply is insufficient
+
+**Command echo** (appears when a JSON command is received and parsed):
+```
+Set PD - Kp: 3.0000, Kd: 0.1000
+Set voltage: 20 V
+Settings saved to flash
+ERR: motion queue full, command dropped
+JSON Deserialization failed: <reason>
+Unknown command: <cmd>
+```
+
+**Motion / planner debug** (`DBG:` prefix, emitted during moves):
+```
+DBG:PLANNER 1 cmd(s) queued
+DBG:PLAN[0] dist=3200 fwd=1 entry=0 cruise=12000 exit=0
+DBG:BLOCK[0] start=0 end=3200 entry=0 exit=0
+DBG:PLANNER_DONE reason=NORMAL
+DBG:TMC_DISABLE_START
+DBG:TMC_DISABLE_DONE
+DBG:STOP_SENDING pos=3200
+DBG:STOP_SENT
+```
+
+**Interpreting common issues:**
+| Symptom | Likely cause |
+|---|---|
+| No output at all | Wrong port, wrong baud (check 115200), or AUX1/GND miswired |
+| `PG: FAIL` in `[SYSTEM]` | USB PD supply not providing requested voltage; TMC2209 stays disabled |
+| `ERR: motion queue full` | Commands sent faster than motion completes; add delay between JSON commands |
+| `JSON Deserialization failed` | Malformed JSON sent on USB CDC; check newline termination |
+| `DBG:PLANNER_DONE reason=ESTOP` | Following error exceeded threshold; motor stalled or encoder disconnected |
+| Repeated `--- SYSTEM BOOT #N ---` incrementing rapidly | Crash loop (watchdog, panic); check `Reset Reason` line |
+
 ## Other Examples in Repository
 
 The repository contains multiple independent example projects:
