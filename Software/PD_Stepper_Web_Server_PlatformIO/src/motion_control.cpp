@@ -476,10 +476,20 @@ static void ControlTask(void *) {
 
         if (!s_running) {
             if (g_hold_active) {
-                // Active hold: PD corrects drift toward last target position.
-                // The 1.5-step deadband in PDController prevents micro-oscillation.
-                float correction = pd.compute(g_hold_target, 0.0f, measPos, 0.001f);
-                stepgen::setVelocity(correction);
+                // Active hold with wide deadband so TMC2209 can detect standstill
+                // and drop to IHOLD.  Deadband is 4 encoder counts regardless of
+                // the current microstep setting (counts_to_steps scales with µsteps).
+                const float holdDeadband = 4.0f * counts_to_steps;
+                float holdError = g_hold_target - measPos;
+                if (fabsf(holdError) > holdDeadband) {
+                    float correction = pd.compute(g_hold_target, 0.0f, measPos, 0.001f);
+                    stepgen::setVelocity(correction);
+                } else {
+                    stepgen::setVelocity(0.0f);
+                    // Keep derivative state coherent: treat "inside deadband" as
+                    // error = 0 so there is no D-term spike on re-entry.
+                    pd.prev_error = 0.0f;
+                }
             } else {
                 stepgen::setVelocity(0.0f);
                 pd.reset();
