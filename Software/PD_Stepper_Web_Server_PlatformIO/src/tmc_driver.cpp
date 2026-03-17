@@ -117,4 +117,8 @@ void setStandstillMode(int mode) {
     break;
   }
 }
+void setHoldDelay(int percent) { stepper_driver.setHoldDelay(percent); }
+void setAllCurrentValues(int run, int hold, int delay) {
+  stepper_driver.setAllCurrentValues(run, hold, delay);
+}
 } // namespace tmc

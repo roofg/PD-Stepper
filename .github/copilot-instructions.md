@@ -101,6 +101,8 @@ python TriggerMove.py
 { "cmd": "set_pd", "kp": 3.0, "kd": 0.1 }
 { "cmd": "set_phase_lead", "kv": 0.002 }
 { "cmd": "set_current", "value": 80 }
+{ "cmd": "set_hold_current", "value": 25 }
+{ "cmd": "set_hold_delay", "value": 8 }
 { "cmd": "set_microsteps", "value": 32 }
 { "cmd": "set_voltage", "value": "20" }
 { "cmd": "set_stall_threshold", "value": 10 }
@@ -144,7 +146,7 @@ No ESPAsyncWebServer or WiFi libraries.
 
 ### Configuration & State
 
-- **Preferences:** Stores `voltage`, `current`, `microsteps`, `stall_threshold`, `standstill_mode`, `boot_count`
+- **Preferences:** Stores `voltage`, `current`, `hold_current`, `hold_delay`, `microsteps`, `stall_threshold`, `standstill_mode`, `boot_count`
 - **Startup sequence:** PD trigger pins → GPIO → Encoder → TMC2209 → Serial1 → USBSerial → motion::init()
 - **Power Good:** Check PG pin (GPIO 15) before enabling TMC2209 — prevents damage if USB PD unavailable
 
@@ -154,7 +156,9 @@ No ESPAsyncWebServer or WiFi libraries.
 - **Phase-lead compensation:** `Kv * target_velocity` advances reference position to pre-compensate encoder lag at speed; start at 0 and tune upward
 - **Trajectory buffer:** SPSC ring (16 slots, ~2–5 ms each); decouples 500 Hz planner from 1 kHz control task
 - **Step generator ISR:** Fully deterministic; only reads `step_increment` written atomically by ControlTask
-- **Shutdown sequence:** `PLANNER_DONE` → `stepgen::halt()` → 100 ms settle → `tmc::disable()` → `sendStop()`
+- **Shutdown sequence:** `PLANNER_DONE` → `stepgen::halt()` → 100 ms settle → enter active hold → `sendStop()`
+- **Active hold:** After move completes, ControlTask runs PD toward last target position at 1 kHz. TMC2209 stays enabled at IHOLD (default 25%). The 1.5-step deadband prevents micro-oscillation. Driver is only disabled at boot (enabled on first move, stays on).
+- **TMC2209 idle power:** Hold current (`IHOLD`) + hold delay (`IHOLDDELAY`) + auto current scaling handle power reduction at standstill. Standstill modes (NORMAL/FREEWHEELING/BRAKING/STRONG_BRAKING) are now effective.
 - **Max following error:** Configurable threshold; exceeding it triggers an emergency stop
 
 ### Python Client Conventions

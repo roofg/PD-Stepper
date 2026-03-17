@@ -30,6 +30,8 @@ static int   setVoltage     = 20;
 static int   setMicrosteps  = 32;
 static int   setCurrent     = 50;
 static int   setStall       = 10;
+static int   setHoldCurrent = 25;
+static int   setHoldDelay   = 8;
 static char  standstillMode[16] = "NORMAL";
 
 // Note: button debounce and open-loop position control variables have been
@@ -75,6 +77,7 @@ void setup() {
 
   tmc::init(TMC_RX, TMC_TX);
   tmc::setRunCurrent(80); // 80% current is safer for 12kHz moves
+  tmc::setHoldCurrent(25); // 25% hold — low heat, maintains position
   tmc::enableAutomaticCurrentScaling();
   tmc::enableStealthChop(); // StealthChop is smoother for low/mid speeds
   tmc::setCoolStepDurationThreshold(5000);
@@ -212,6 +215,16 @@ void processSerialCommands() {
             tmc::setRunCurrent(setCurrent);
             Serial1.printf("Set current: %d%%\n", setCurrent);
 
+          } else if (strcmp(cmd, "set_hold_current") == 0) {
+            setHoldCurrent = doc["value"] | 25;
+            tmc::setHoldCurrent(setHoldCurrent);
+            Serial1.printf("Set hold current: %d%%\n", setHoldCurrent);
+
+          } else if (strcmp(cmd, "set_hold_delay") == 0) {
+            setHoldDelay = doc["value"] | 8;
+            tmc::setHoldDelay(setHoldDelay);
+            Serial1.printf("Set hold delay: %d\n", setHoldDelay);
+
           } else if (strcmp(cmd, "set_microsteps") == 0) {
             setMicrosteps = doc["value"] | 32;
             tmc::setMicrostepsPerStep(setMicrosteps);
@@ -236,10 +249,11 @@ void processSerialCommands() {
 
           } else if (strcmp(cmd, "get_settings") == 0) {
             Serial1.printf(
-                "{\"voltage\":%d,\"current\":%d,\"microsteps\":%d,"
+                "{\"voltage\":%d,\"current\":%d,\"hold_current\":%d,"
+                "\"hold_delay\":%d,\"microsteps\":%d,"
                 "\"stall_threshold\":%d,\"standstill_mode\":\"%s\"}\n",
-                setVoltage, setCurrent, setMicrosteps,
-                setStall, standstillMode);
+                setVoltage, setCurrent, setHoldCurrent, setHoldDelay,
+                setMicrosteps, setStall, standstillMode);
 
           } else if (strcmp(cmd, "telemetry") == 0) {
             bool enabled = doc["enabled"] | false;
@@ -311,6 +325,8 @@ void configureSettings() {
   }
 
   tmc::setRunCurrent(setCurrent);
+  tmc::setHoldCurrent(setHoldCurrent);
+  tmc::setHoldDelay(setHoldDelay);
   tmc::setMicrostepsPerStep(setMicrosteps);
   tmc::setStallGuardThreshold(setStall);
 
@@ -338,6 +354,8 @@ void readSettings() {
     setVoltage    = preferences.getInt("voltage",        20);
     setMicrosteps = preferences.getInt("microsteps",     32);
     setCurrent    = preferences.getInt("current",        50);
+    setHoldCurrent= preferences.getInt("holdCurrent",   25);
+    setHoldDelay  = preferences.getInt("holdDelay",       8);
     setStall      = preferences.getInt("stallThreshold", 10);
     String mode   = preferences.getString("standstillMode", "NORMAL");
     strncpy(standstillMode, mode.c_str(), sizeof(standstillMode) - 1);
@@ -351,6 +369,8 @@ void writeSettings() {
   preferences.putInt("voltage",        setVoltage);
   preferences.putInt("microsteps",     setMicrosteps);
   preferences.putInt("current",        setCurrent);
+  preferences.putInt("holdCurrent",    setHoldCurrent);
+  preferences.putInt("holdDelay",      setHoldDelay);
   preferences.putInt("stallThreshold", setStall);
   preferences.putString("standstillMode", standstillMode);
   Serial1.println("Saving settings to flash");

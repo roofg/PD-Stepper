@@ -47,6 +47,14 @@ static volatile float g_kv = 0.0f;
 // Written once from setup() via setConfiguredVoltage(); read by PlannerTask.
 static volatile float g_brownout_threshold_v = 9.0f; // safe default (12V * 0.75)
 
+// Active hold — when true, ControlTask runs PD toward g_hold_target instead
+// of zeroing velocity. Written by PlannerTask; read by ControlTask.
+static volatile bool  g_hold_active    = false;
+static volatile float g_hold_target    = 0.0f;
+// Track whether the driver has been enabled at least once since boot.
+// The driver starts disabled (EN HIGH) and is enabled on the first move.
+static volatile bool  s_driver_enabled = false;
+
 static QueueHandle_t     s_motionQueue   = nullptr;
 static QueueHandle_t     s_teleQueue     = nullptr; // ControlTask → TelemetryTask
 static TaskHandle_t      s_plannerHandle = nullptr;
@@ -290,13 +298,17 @@ static void PlannerTask(void *) {
         // ---- Wait for first command ----
         if (xQueueReceive(s_motionQueue, &cmdBuf[0], portMAX_DELAY) != pdPASS) continue;
 
-        // ---- TMC enable + settle ----
+        // ---- TMC enable (first move only) + settle ----
         uSteps          = (float)g_uSteps_setting;
         if (uSteps < 1) uSteps = 32.0f;
         counts_to_steps = (200.0f * uSteps) / 4096.0f;
 
-        tmc::enable();
-        vTaskDelay(pdMS_TO_TICKS(20)); // wait for driver rails to stabilise
+        g_hold_active = false; // suspend active hold during move
+        if (!s_driver_enabled) {
+            tmc::enable();
+            vTaskDelay(pdMS_TO_TICKS(20)); // wait for driver rails to stabilise
+            s_driver_enabled = true;
+        }
 
         // ---- Drain all queued commands within the settle window ----
         int nCmds = 1;
@@ -391,15 +403,25 @@ static void PlannerTask(void *) {
             // re-run planChain() over the remaining+new commands for seamless continuation.
         }
 
-        // ---- Clean exit ----
+        // ---- Exit: stop trajectory following immediately ----
+        s_running = false;  // ControlTask stops issuing trajectory commands on next tick
+        stepgen::halt();
         Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason);
 
-        stepgen::halt();
-        vTaskDelay(pdMS_TO_TICKS(100));
+        bool faulted = g_fault_lag || g_fault_estop || g_fault_brownout;
+        if (!faulted) {
+            // Normal completion — enter active hold so PD loop corrects drift
+            g_hold_target = g_target_pos;
+            g_hold_active = true;
+        } else {
+            // Fault — disable driver for safety, do NOT enter active hold
+            g_hold_active = false;
+            tmc::disable();
+            s_driver_enabled = false;
+            Serial1.printf("DBG:FAULT_TMC_DISABLED\n");
+        }
 
-        Serial1.printf("DBG:TMC_DISABLE_START\n");
-        tmc::disable();
-        Serial1.printf("DBG:TMC_DISABLE_DONE\n");
+        vTaskDelay(pdMS_TO_TICKS(50)); // brief settle
 
         if (s_telemetry) {
             Serial1.printf("DBG:STOP_SENDING pos=%ld\n", (long)g_meas_pos);
@@ -453,8 +475,15 @@ static void ControlTask(void *) {
         g_meas_pos      = measPos; // share with Planner Task
 
         if (!s_running) {
-            stepgen::setVelocity(0.0f);
-            pd.reset();
+            if (g_hold_active) {
+                // Active hold: PD corrects drift toward last target position.
+                // The 1.5-step deadband in PDController prevents micro-oscillation.
+                float correction = pd.compute(g_hold_target, 0.0f, measPos, 0.001f);
+                stepgen::setVelocity(correction);
+            } else {
+                stepgen::setVelocity(0.0f);
+                pd.reset();
+            }
             continue;
         }
 

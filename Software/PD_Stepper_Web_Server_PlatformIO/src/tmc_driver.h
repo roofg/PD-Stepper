@@ -19,4 +19,6 @@ bool hardwareDisabled();
 void setMicrostepsPerStep(int ms);
 void setStallGuardThreshold(int th);
 void setStandstillMode(int mode);
+void setHoldDelay(int percent);
+void setAllCurrentValues(int run, int hold, int delay);
 } // namespace tmc
