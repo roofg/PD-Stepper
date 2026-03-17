@@ -1,6 +1,6 @@
 ---
 name: read-aux-debug-serial
-description: Guide for reading and interpreting the PD-Stepper AUX debug serial output (Serial1 on COM4 via FT232RL). Use this when asked to open the debug monitor, interpret boot messages, diagnose motion errors, or understand DBG: output.
+description: "Guide for reading and interpreting the PD-Stepper AUX debug serial output (Serial1 on COM4 via FT232RL). Use this when asked to open the debug monitor, interpret boot messages, diagnose motion errors, or understand DBG: output."
 ---
 
 The PD-Stepper board outputs all debug text on Serial1 (AUX UART), never on USBSerial.
