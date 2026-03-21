@@ -336,7 +336,7 @@ void loop() {
     lastHoldStepCount = curStepCount;
     Serial1.printf("[HOLD] Active:%u State:%s StepDelta:%ld/s\r\n",
                    motion::isHoldActive() ? 1 : 0,
-                   motion::getHoldState() == 0 ? "CORRECTING" : "SETTLED",
+                   !motion::isHoldActive() ? "INACTIVE" : (motion::getHoldState() == 0 ? "CORRECTING" : "SETTLED"),
                    (long)stepDelta);
   }
 
