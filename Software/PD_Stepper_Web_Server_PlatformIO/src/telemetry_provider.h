@@ -11,6 +11,6 @@ class TelemetryProvider {
 public:
   virtual void init() = 0;
   virtual void sendTelemetry(const TelemetryData &data) = 0;
-  virtual void sendStop(const char *reason, long pos) = 0;
+  virtual size_t sendStop(const char *reason, long pos) = 0;
   virtual ~TelemetryProvider() = default;
 };

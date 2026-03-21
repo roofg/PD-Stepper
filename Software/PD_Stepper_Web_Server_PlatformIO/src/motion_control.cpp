@@ -274,9 +274,19 @@ static void TelemetryTask(void *) {
             if (d.type == TELEMETRY_STOP) {
                 // All USBSerial writes happen here — PlannerTask enqueues rather
                 // than calling sendStop() directly, preventing interleaved bytes.
+                // Retry once after 500 ms if the first send fails (CDC TX may be
+                // briefly disconnected due to a Windows USB CDC driver hiccup).
                 Serial1.printf("DBG:STOP_SENDING pos=%ld\n", d.pos);
-                s_telemetry->sendStop(d.stopReason, d.pos);
-                Serial1.printf("DBG:STOP_SENT\n");
+                size_t sent = s_telemetry->sendStop(d.stopReason, d.pos);
+                if (sent == 0) {
+                    Serial1.printf("WARN:STOP_SEND_FAILED — retrying in 500 ms\n");
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    sent = s_telemetry->sendStop(d.stopReason, d.pos);
+                    if (sent == 0) {
+                        Serial1.printf("ERR:STOP_NOT_SENT after retry\n");
+                    }
+                }
+                Serial1.printf("DBG:STOP_SENT bytes=%u\n", (unsigned)sent);
             } else {
                 s_telemetry->sendTelemetry(d);
             }
@@ -354,8 +364,14 @@ static void PlannerTask(void *) {
         float chainStartPos = g_meas_pos;
         planChain(cmdBuf, nCmds, chainStartPos, blocks);
 
-        // ---- Reset faults ----
+        // ---- Reset faults and drain any stale telemetry from the previous run ----
+        // PlannerTask (pri 5) never yields between enqueueing the previous STOP and
+        // picking up a new command (both are on Core 0 with no blocking call between).
+        // xQueueReset here ensures TelemetryTask cannot deliver a previous run's STOP
+        // packet while this run is already producing UPDATE packets.  Safe to call:
+        // ControlTask does not enqueue UPDATE packets until s_running is true (set below).
         g_fault_lag = g_fault_estop = g_fault_brownout = false;
+        xQueueReset(s_teleQueue);
         s_running   = true;
 
         char     stopReason[32] = "Completed";

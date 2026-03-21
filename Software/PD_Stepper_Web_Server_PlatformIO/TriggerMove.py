@@ -123,11 +123,16 @@ def main():
         print(f"ERROR: {e}")
         return
 
-    # 400 ms: allow Windows USB CDC TX to fully re-establish after port open and
-    # drain any bytes the ESP32 buffered during the previous session.
-    # reset_input_buffer() then clears them before we send the move command.
-    time.sleep(0.4)
+    # Dynamic drain: the ESP32 retransmits bytes buffered in its CDC TX FIFO
+    # when the host reconnects.  Retransmission can arrive tens to hundreds of
+    # milliseconds after port open — a fixed sleep is unreliable on Windows.
+    # Read with a short (50 ms) timeout and loop until 50 ms of silence; that
+    # guarantees all stale bytes are consumed before we send the move command.
+    ser.timeout = 0.05
+    while ser.read(256):
+        pass
     ser.reset_input_buffer()
+    ser.timeout = 0.1  # restore normal read timeout
 
     cmd = {
         "cmd":      "move",

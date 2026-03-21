@@ -73,7 +73,7 @@ public:
     USBSerial.write(buf, sizeof(buf));
   }
 
-  void sendStop(const char *reason, long pos) override {
+  size_t sendStop(const char *reason, long pos) override {
     uint8_t buf[38];
     buf[0] = 0xAA;
     buf[1] = 0xCC; // STOP marker
@@ -85,9 +85,10 @@ public:
     memset(&buf[6], 0, 32);
     strncpy((char *)&buf[6], reason, 31);
 
-    USBSerial.write(buf, sizeof(buf));
+    size_t written = USBSerial.write(buf, sizeof(buf));
     // Do NOT call flush() here — on ESP32-S3 USB CDC, flush() can corrupt the
     // TX buffer, dropping bytes that were already queued (including this packet).
     // The CDC driver will send the data automatically within ~1 ms.
+    return written;
   }
 };
