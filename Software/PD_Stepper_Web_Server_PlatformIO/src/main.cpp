@@ -1,6 +1,7 @@
 #include "encoder.h"
 #include "motion_control.h"
 #include "pins.h"
+#include "step_generator.h"
 #include "tmc_driver.h"
 #include "usb_telemetry_provider.h"
 #include <Arduino.h>
@@ -28,7 +29,7 @@ const float DIV_RATIO = 0.1189427313; // 20k/2.7k voltage divider
 // Persistent settings (loaded from Preferences on boot, saved by "save" command)
 static int   setVoltage     = 20;
 static int   setMicrosteps  = 32;
-static int   setCurrent     = 50;
+static int   setCurrent     = 60;  // 60% default — was 80%; lower heat, still sufficient torque
 static int   setStall       = 10;
 static int   setHoldCurrent = 25;
 static int   setHoldDelay   = 8;
@@ -76,11 +77,14 @@ void setup() {
   readSettings(); // get saved values from EEPROM
 
   tmc::init(TMC_RX, TMC_TX);
-  tmc::setRunCurrent(80); // 80% current is safer for 12kHz moves
+  tmc::setRunCurrent(80); // 80% initial; configureSettings() will lower to setCurrent (60% default)
   tmc::setHoldCurrent(25); // 25% hold — low heat, maintains position
   tmc::enableAutomaticCurrentScaling();
+  tmc::enableAutomaticGradientAdaptation(); // improves PWM efficiency alongside auto scaling
   tmc::enableStealthChop(); // StealthChop is smoother for low/mid speeds
-  tmc::setCoolStepDurationThreshold(5000);
+  tmc::setCoolStepDurationThreshold(2000); // CoolStep active when TSTEP < 2000 (above min speed)
+  tmc::enableCoolStep(1, 0);  // lower=1 (reduce 1 step), upper=0 (increase immediately)
+  tmc::setPowerDownDelay(10); // fast IRUN→IHOLD transition after standstill detected
   tmc::disable();
 
   configureSettings(); // use saved settings
@@ -255,6 +259,30 @@ void processSerialCommands() {
                 setVoltage, setCurrent, setHoldCurrent, setHoldDelay,
                 setMicrosteps, setStall, standstillMode);
 
+          } else if (strcmp(cmd, "get_driver_status") == 0) {
+            tmc::DriverStatus ds   = tmc::getDriverStatus();
+            tmc::DriverSettings cfg = tmc::getDriverSettings();
+            uint16_t pwmScale      = tmc::getPwmScaleSum();
+            uint32_t tstep         = tmc::getInterstepDuration();
+            Serial1.printf(
+                "{\"cs_actual\":%u,\"standstill\":%s,\"stealth_chop\":%s,"
+                "\"ot_warn\":%s,\"ot_shutdown\":%s,"
+                "\"irun\":%u,\"ihold\":%u,\"iholddelay\":%u,"
+                "\"cool_step\":%s,\"auto_scaling\":%s,"
+                "\"pwm_scale\":%u,\"tstep\":%lu,"
+                "\"hold_active\":%s,\"hold_target\":%.1f}\n",
+                ds.current_scaling,
+                ds.standstill ? "true" : "false",
+                ds.stealth_chop ? "true" : "false",
+                ds.over_temperature_warning ? "true" : "false",
+                ds.over_temperature_shutdown ? "true" : "false",
+                cfg.irun_percent, cfg.ihold_percent, cfg.iholddelay_percent,
+                cfg.cool_step_enabled ? "true" : "false",
+                cfg.automatic_current_scaling ? "true" : "false",
+                pwmScale, (unsigned long)tstep,
+                motion::isHoldActive() ? "true" : "false",
+                motion::getHoldTarget());
+
           } else if (strcmp(cmd, "telemetry") == 0) {
             bool enabled = doc["enabled"] | false;
             Serial1.printf("Telemetry Command: %s\n", enabled ? "ON" : "OFF");
@@ -290,6 +318,26 @@ void loop() {
     // Diagnostic output to AUX UART (Serial1), not USB CDC
     Serial1.printf("[SYSTEM] VBus: %.2fV, PG: %s, Core: %d\r\n", VBusVoltage,
                      PGState ? "FAIL" : "OK", xPortGetCoreID());
+
+    // TMC2209 driver diagnostics (UART read — mutex-protected, safe from Core 1 at 1 Hz)
+    tmc::DriverStatus ds = tmc::getDriverStatus();
+    uint16_t pwmScale    = tmc::getPwmScaleSum();
+    Serial1.printf("[TMC] CS:%u/31 Standstill:%u StealthChop:%u OT:%u%s PWM:%u\r\n",
+                   ds.current_scaling, ds.standstill ? 1 : 0,
+                   ds.stealth_chop ? 1 : 0,
+                   ds.over_temperature_warning ? 1 : 0,
+                   ds.over_temperature_shutdown ? " SHUTDOWN" : "",
+                   pwmScale);
+
+    // Hold state diagnostics
+    static int32_t lastHoldStepCount = 0;
+    int32_t curStepCount = stepgen::getStepCount();
+    int32_t stepDelta = abs(curStepCount - lastHoldStepCount);
+    lastHoldStepCount = curStepCount;
+    Serial1.printf("[HOLD] Active:%u State:%s StepDelta:%ld/s\r\n",
+                   motion::isHoldActive() ? 1 : 0,
+                   motion::getHoldState() == 0 ? "CORRECTING" : "SETTLED",
+                   (long)stepDelta);
   }
 
   // Explicitly yield to reset the loopTask watchdog
@@ -353,7 +401,7 @@ void readSettings() {
     Serial1.println("Settings found in EEPROM");
     setVoltage    = preferences.getInt("voltage",        20);
     setMicrosteps = preferences.getInt("microsteps",     32);
-    setCurrent    = preferences.getInt("current",        50);
+    setCurrent    = preferences.getInt("current",        60);
     setHoldCurrent= preferences.getInt("holdCurrent",   25);
     setHoldDelay  = preferences.getInt("holdDelay",       8);
     setStall      = preferences.getInt("stallThreshold", 10);

@@ -55,6 +55,18 @@ static volatile float g_hold_target    = 0.0f;
 // The driver starts disabled (EN HIGH) and is enabled on the first move.
 static volatile bool  s_driver_enabled = false;
 
+// Hold state machine — managed by ControlTask
+// CORRECTING: PD loop actively driving step pulses to reach target
+// SETTLED:    position within deadband long enough; step pulses stopped
+//             so TMC2209 detects standstill and drops to IHOLD
+enum HoldState : uint8_t { HOLD_CORRECTING = 0, HOLD_SETTLED = 1 };
+static volatile uint8_t  g_hold_state      = HOLD_CORRECTING;
+static volatile uint32_t g_settle_start_ms = 0; // module-scope so it resets across hold activations
+
+// Settle time: motor must stay inside deadband for this many ms before
+// transitioning to SETTLED (prevents rapid flapping from encoder noise).
+static constexpr uint32_t HOLD_SETTLE_MS = 500;
+
 static QueueHandle_t     s_motionQueue   = nullptr;
 static QueueHandle_t     s_teleQueue     = nullptr; // ControlTask → TelemetryTask
 static TaskHandle_t      s_plannerHandle = nullptr;
@@ -304,19 +316,26 @@ static void PlannerTask(void *) {
         counts_to_steps = (200.0f * uSteps) / 4096.0f;
 
         g_hold_active = false; // suspend active hold during move
+        g_hold_state = HOLD_CORRECTING; // reset state machine for next hold
+        g_settle_start_ms = 0;
         if (!s_driver_enabled) {
             tmc::enable();
             vTaskDelay(pdMS_TO_TICKS(20)); // wait for driver rails to stabilise
             s_driver_enabled = true;
         }
 
-        // ---- Drain all queued commands within the settle window ----
+        // ---- Drain all queued commands ----
+        // If the last received command has chain=true, wait up to 50 ms for
+        // the next command to arrive (the serial parser may not have enqueued
+        // it yet).  Without this, back-to-back chain commands sent from the
+        // host can be split into separate single-command executions.
         int nCmds = 1;
         while (nCmds < MAX_CHAIN_LEN) {
-            if (xQueueReceive(s_motionQueue, &cmdBuf[nCmds], 0) == pdPASS) {
+            TickType_t wait = cmdBuf[nCmds - 1].chain ? pdMS_TO_TICKS(50) : 0;
+            if (xQueueReceive(s_motionQueue, &cmdBuf[nCmds], wait) == pdPASS) {
                 nCmds++;
             } else {
-                break; // queue empty
+                break;
             }
         }
         Serial1.printf("DBG:PLANNER %d cmd(s) queued\n", nCmds);
@@ -476,23 +495,54 @@ static void ControlTask(void *) {
 
         if (!s_running) {
             if (g_hold_active) {
-                // Active hold with wide deadband so TMC2209 can detect standstill
-                // and drop to IHOLD.  Deadband is 4 encoder counts regardless of
-                // the current microstep setting (counts_to_steps scales with µsteps).
+                // Hold state machine: CORRECTING → SETTLED
+                //
+                // CORRECTING: PD loop drives corrections when position is
+                //   outside the deadband. Step pulses keep TMC2209 at IRUN.
+                // SETTLED: position stayed inside deadband for HOLD_SETTLE_MS.
+                //   Step pulses stop → TMC2209 detects standstill → drops to
+                //   IHOLD automatically, dramatically reducing motor heat.
                 const float holdDeadband = 4.0f * counts_to_steps;
                 float holdError = g_hold_target - measPos;
-                if (fabsf(holdError) > holdDeadband) {
-                    float correction = pd.compute(g_hold_target, 0.0f, measPos, 0.001f);
-                    stepgen::setVelocity(correction);
-                } else {
-                    stepgen::setVelocity(0.0f);
-                    // Keep derivative state coherent: treat "inside deadband" as
-                    // error = 0 so there is no D-term spike on re-entry.
-                    pd.prev_error = 0.0f;
+                bool insideDeadband = (fabsf(holdError) <= holdDeadband);
+
+                if (g_hold_state == HOLD_SETTLED) {
+                    // In SETTLED state — no step pulses, TMC2209 handles holding
+                    if (!insideDeadband) {
+                        // Position drifted out — re-enter correcting
+                        g_hold_state = HOLD_CORRECTING;
+                        g_settle_start_ms = 0;
+                    } else {
+                        stepgen::setVelocity(0.0f);
+                    }
+                }
+
+                if (g_hold_state == HOLD_CORRECTING) {
+                    if (insideDeadband) {
+                        // Start or continue the settle timer
+                        if (g_settle_start_ms == 0) {
+                            g_settle_start_ms = millis();
+                        } else if ((millis() - g_settle_start_ms) >= HOLD_SETTLE_MS) {
+                            // Transition to SETTLED
+                            g_hold_state = HOLD_SETTLED;
+                            stepgen::setVelocity(0.0f);
+                            pd.prev_error = 0.0f;
+                        }
+                        // While counting down, stay silent (already in deadband)
+                        stepgen::setVelocity(0.0f);
+                        pd.prev_error = 0.0f;
+                    } else {
+                        // Outside deadband — correct and reset settle timer
+                        g_settle_start_ms = 0;
+                        float correction = pd.compute(g_hold_target, 0.0f, measPos, 0.001f);
+                        stepgen::setVelocity(correction);
+                    }
                 }
             } else {
                 stepgen::setVelocity(0.0f);
                 pd.reset();
+                g_hold_state = HOLD_CORRECTING;
+                g_settle_start_ms = 0; // ensure clean state for next hold activation
             }
             continue;
         }
@@ -597,7 +647,8 @@ void init() {
     // pulses until setVelocity() is called with a non-zero value).
     stepgen::init(STEP_PIN, DIR_PIN);
 
-    tmc::setRunCurrent(80); // 80 % run current for safe high-speed moves
+    // NOTE: run current is applied by configureSettings() in main.cpp setup()
+    // after motion::init(). Do NOT set it here — it would override user-saved settings.
 
     // Telemetry Task: Core 0, lowest priority — allowed to block on USB TX
     xTaskCreatePinnedToCore(TelemetryTask, "TeleTask",   2048, nullptr,  3,
@@ -631,5 +682,8 @@ bool addCommand(long distance, float acceleration, float maxSpeed, bool absolute
 }
 
 bool isRunning() { return s_running; }
+bool isHoldActive() { return g_hold_active; }
+float getHoldTarget() { return g_hold_target; }
+uint8_t getHoldState() { return g_hold_state; }
 
 } // namespace motion

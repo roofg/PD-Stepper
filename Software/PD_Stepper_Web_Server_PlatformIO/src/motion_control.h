@@ -61,4 +61,9 @@ bool addCommand(long distance, float acceleration, float maxSpeed,
 // Returns true while a move is in progress.
 bool isRunning();
 
+// Hold diagnostics — readable from any task
+bool isHoldActive();
+float getHoldTarget();
+uint8_t getHoldState(); // 0 = CORRECTING, 1 = SETTLED
+
 } // namespace motion
