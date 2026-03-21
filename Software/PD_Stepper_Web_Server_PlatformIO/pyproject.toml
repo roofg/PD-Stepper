@@ -1,0 +1,9 @@
+[project]
+name = "pd-stepper"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "pyserial>=3.5",
+    "pytest>=7.0",
+    "websockets>=14.0",
+]
