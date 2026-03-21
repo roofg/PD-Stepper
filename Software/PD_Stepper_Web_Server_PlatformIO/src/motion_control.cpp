@@ -266,10 +266,20 @@ static void planChain(const MotionCommand* cmds, int n,
 // priority means a blocked USB CDC TX FIFO only stalls this task, not the
 // 1 kHz ControlTask on Core 1.
 // ---------------------------------------------------------------------------
-static void TelemetryTask(void *) {    TelemetryData d;
+static void TelemetryTask(void *) {
+    TelemetryData d;
     for (;;) {
         if (xQueueReceive(s_teleQueue, &d, portMAX_DELAY) == pdPASS) {
-            if (s_telemetry) s_telemetry->sendTelemetry(d);
+            if (!s_telemetry) continue;
+            if (d.type == TELEMETRY_STOP) {
+                // All USBSerial writes happen here — PlannerTask enqueues rather
+                // than calling sendStop() directly, preventing interleaved bytes.
+                Serial1.printf("DBG:STOP_SENDING pos=%ld\n", d.pos);
+                s_telemetry->sendStop(d.stopReason, d.pos);
+                Serial1.printf("DBG:STOP_SENT\n");
+            } else {
+                s_telemetry->sendTelemetry(d);
+            }
         }
     }
 }
@@ -442,10 +452,20 @@ static void PlannerTask(void *) {
 
         vTaskDelay(pdMS_TO_TICKS(50)); // brief settle
 
-        if (s_telemetry) {
-            Serial1.printf("DBG:STOP_SENDING pos=%ld\n", (long)g_meas_pos);
-            s_telemetry->sendStop(stopReason, (long)g_meas_pos);
-            Serial1.printf("DBG:STOP_SENT\n");
+        // Route STOP through the telemetry queue so TelemetryTask owns all
+        // USBSerial writes.  Calling sendStop() directly here (from PlannerTask)
+        // while TelemetryTask may concurrently be inside sendTelemetry() causes
+        // interleaved bytes on the USB CDC TX buffer — Python never sees a clean
+        // 0xAA 0xCC header.  Using the queue serialises the writes by FIFO order.
+        if (s_teleQueue) {
+            TelemetryData stopData = {};
+            stopData.type = TELEMETRY_STOP;
+            stopData.pos  = (long)g_meas_pos;
+            strncpy(stopData.stopReason, stopReason, sizeof(stopData.stopReason) - 1);
+            Serial1.printf("DBG:STOP_QUEUED pos=%ld reason=%s\n", (long)g_meas_pos, stopReason);
+            if (xQueueSend(s_teleQueue, &stopData, pdMS_TO_TICKS(200)) != pdPASS) {
+                Serial1.printf("ERR:STOP_QUEUE_FULL — STOP packet dropped!\n");
+            }
         }
     }
 }

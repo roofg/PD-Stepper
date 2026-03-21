@@ -23,6 +23,12 @@ STOP_PACKET_LEN = 38
 TELE_FMT        = "<IiiihhhhHB"
 STOP_FMT        = "<i32s"
 
+# The firmware enforces a 50 ms settle delay before it can send any STOP packet.
+# A STOP arriving sooner than this is a stale packet left in the OS serial buffer
+# from a previous run.  40 ms is safely below the firmware minimum (~50 ms) while
+# remaining well above typical stale-packet arrival (~10–25 ms after port open).
+STALE_GUARD_S   = 0.040
+
 
 def send_cmd(ser: serial.Serial, obj: dict):
     ser.write((json.dumps(obj) + "\n").encode("utf-8"))
@@ -78,6 +84,13 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
             elif buf[1] == STOP_HEADER[1]:
                 if len(buf) < STOP_PACKET_LEN:
                     break
+                elapsed = time.time() - start
+                if elapsed < STALE_GUARD_S:
+                    # Arrived before the firmware's minimum response time — stale
+                    # OS-buffered packet from a previous run.  Discard and continue.
+                    print(f"  [WARN] Discarding stale STOP packet (arrived at {elapsed*1000:.0f}ms)")
+                    buf = buf[STOP_PACKET_LEN:]
+                    continue
                 pkt = buf[:STOP_PACKET_LEN]
                 final_pos, reason_b = struct.unpack(STOP_FMT, bytes(pkt[2:]))
                 reason = reason_b.rstrip(b"\x00").decode("ascii", errors="replace")
@@ -110,7 +123,10 @@ def main():
         print(f"ERROR: {e}")
         return
 
-    time.sleep(0.1)  # brief flush before clearing stale bytes
+    # 400 ms: allow Windows USB CDC TX to fully re-establish after port open and
+    # drain any bytes the ESP32 buffered during the previous session.
+    # reset_input_buffer() then clears them before we send the move command.
+    time.sleep(0.4)
     ser.reset_input_buffer()
 
     cmd = {
