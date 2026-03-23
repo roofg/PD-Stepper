@@ -109,6 +109,7 @@ void setup() {
   Serial1.begin(115200, SERIAL_8N1, PIN_AUX2, PIN_AUX1);
 
   // USB CDC — binary protocol only (no text written to USBSerial anywhere).
+  USBSerial.setRxBufferSize(1024); // Default 256 B is insufficient for burst of 9+1 settings+move commands (~420 B)
   USBSerial.begin(921600); // Must match TriggerMove.py --baud
   delay(500);              // Short stabilization time
   // USB write mutex — must exist before motion::init() launches tasks that write to USBSerial
@@ -270,7 +271,12 @@ void processSerialCommands() {
               Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
             } else {
               setVoltage = doc["value"] | 20;
-              configureSettings();
+              // Update CH224K CFG pins only — TMC registers don't need reprogramming for a voltage change
+              if      (setVoltage == 5)  { digitalWrite(PD_CFG1, HIGH); digitalWrite(PD_CFG2, LOW);  digitalWrite(PD_CFG3, LOW);  }
+              else if (setVoltage == 9)  { digitalWrite(PD_CFG1, LOW);  digitalWrite(PD_CFG2, LOW);  digitalWrite(PD_CFG3, LOW);  }
+              else if (setVoltage == 12) { digitalWrite(PD_CFG1, LOW);  digitalWrite(PD_CFG2, LOW);  digitalWrite(PD_CFG3, HIGH); }
+              else if (setVoltage == 15) { digitalWrite(PD_CFG1, LOW);  digitalWrite(PD_CFG2, HIGH); digitalWrite(PD_CFG3, HIGH); }
+              else if (setVoltage == 20) { digitalWrite(PD_CFG1, LOW);  digitalWrite(PD_CFG2, HIGH); digitalWrite(PD_CFG3, LOW);  }
               motion::setConfiguredVoltage((float)setVoltage);
               Serial1.printf("Set voltage: %d V\n", setVoltage);
             }
@@ -328,7 +334,11 @@ void processSerialCommands() {
               const char *mode = doc["value"] | "NORMAL";
               strncpy(standstillMode, mode, sizeof(standstillMode) - 1);
               standstillMode[sizeof(standstillMode) - 1] = '\0';
-              configureSettings();
+              uint8_t ssm = 0;
+              if      (strcmp(standstillMode, "FREEWHEELING")   == 0) ssm = 1;
+              else if (strcmp(standstillMode, "BRAKING")        == 0) ssm = 2;
+              else if (strcmp(standstillMode, "STRONG_BRAKING") == 0) ssm = 3;
+              tmc::setStandstillMode(ssm);
               Serial1.printf("Set standstill mode: %s\n", standstillMode);
             }
 
@@ -337,7 +347,8 @@ void processSerialCommands() {
               Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
             } else {
               stealthchopEnabled = (int)(doc["value"] | 1) != 0;
-              configureSettings();
+              if (stealthchopEnabled) tmc::enableStealthChop();
+              else                    tmc::disableStealthChop();
               Serial1.printf("Set StealthChop: %s\n", stealthchopEnabled ? "ON" : "OFF");
             }
 
@@ -346,7 +357,8 @@ void processSerialCommands() {
               Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
             } else {
               coolstepEnabled = (int)(doc["value"] | 1) != 0;
-              configureSettings();
+              if (coolstepEnabled) tmc::enableCoolStep(1, 0);
+              else                 tmc::disableCoolStep();
               Serial1.printf("Set CoolStep: %s\n", coolstepEnabled ? "ON" : "OFF");
             }
 
