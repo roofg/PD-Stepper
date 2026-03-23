@@ -710,7 +710,7 @@ static void ControlTask(void *) {
                         d.meas      = (long)measPos;
                         d.target    = (long)g_hold_target;
                         d.lag       = (int)(g_hold_target - measPos);
-                        d.vel       = 0;
+                        d.vel       = (int)mVel;   // measured encoder velocity — not 0 during correcting
                         d.p_acc     = 0;
                         d.p_dist    = 0;
                         d.sg_result = g_sg_result;
