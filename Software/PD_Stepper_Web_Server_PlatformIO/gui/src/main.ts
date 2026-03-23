@@ -27,7 +27,6 @@ const teleSkipped     = document.getElementById('tele-skipped')       as HTMLSpa
 const teleStatus      = document.getElementById('tele-status')        as HTMLDivElement;
 const stopInfo        = document.getElementById('stop-info')          as HTMLDivElement;
 const perfMetrics     = document.getElementById('perf-metrics')       as HTMLDivElement;
-const perfSkipped     = document.getElementById('perf-skipped')       as HTMLSpanElement;
 const perfMaxLag      = document.getElementById('perf-max-lag')       as HTMLSpanElement;
 const perfLagJitter   = document.getElementById('perf-lag-jitter')    as HTMLSpanElement;
 const perfEffort      = document.getElementById('perf-effort')        as HTMLSpanElement;
@@ -38,8 +37,6 @@ const linkUpdates     = document.getElementById('link-updates')       as HTMLSpa
 const linkStopsRatio  = document.getElementById('link-stops-ratio')   as HTMLSpanElement;
 const linkCsumErr     = document.getElementById('link-csum-err')      as HTMLSpanElement;
 const linkResyncs     = document.getElementById('link-resyncs')       as HTMLSpanElement;
-const linkGaps        = document.getElementById('link-gaps')          as HTMLSpanElement;
-const linkMaxGap      = document.getElementById('link-max-gap')       as HTMLSpanElement;
 const linkBytes       = document.getElementById('link-bytes')         as HTMLSpanElement;
 const linkWriteErr    = document.getElementById('link-write-err')     as HTMLSpanElement;
 const linkDrain       = document.getElementById('link-drain')         as HTMLSpanElement;
@@ -74,8 +71,6 @@ const dsTstep       = document.getElementById('ds-tstep')       as HTMLSpanEleme
 const dsSg          = document.getElementById('ds-sg')          as HTMLSpanElement;
 const dsStealth     = document.getElementById('ds-stealth')     as HTMLSpanElement;
 const dsStandstill2 = document.getElementById('ds-standstill')  as HTMLSpanElement;
-const dsHeap        = document.getElementById('ds-heap')        as HTMLSpanElement;
-const dsHwm         = document.getElementById('ds-hwm')         as HTMLSpanElement;
 const dsBoot        = document.getElementById('ds-boot')        as HTMLSpanElement;
 const dsReset       = document.getElementById('ds-reset')       as HTMLSpanElement;
 
@@ -177,7 +172,6 @@ function updateLinkStats(): void {
 
   linkUpdates.textContent    = ls.updateCount.toString();
   linkBytes.textContent      = `${fmtBytes(ls.bytesIn)} / ${fmtBytes(ls.bytesOut)}`;
-  linkMaxGap.textContent     = `${ls.maxGapMs} ms`;
   linkDrain.textContent      = fmtBytes(ls.drainBytes);
 
   // Colour-coded counters
@@ -190,9 +184,6 @@ function updateLinkStats(): void {
 
   linkResyncs.textContent  = ls.resyncEvents.toString();
   linkResyncs.className    = `metric-value ${health(ls.resyncEvents, 1, 5)}`;
-
-  linkGaps.textContent     = ls.gapsOver150ms.toString();
-  linkGaps.className       = `metric-value ${health(ls.gapsOver150ms, 1, 5)}`;
 
   linkWriteErr.textContent = ls.writeErrors.toString();
   linkWriteErr.className   = `metric-value ${health(ls.writeErrors, 1, 3)}`;
@@ -347,8 +338,6 @@ conn.onStatus = (pkt: StatusPacket): void => {
   setBadge(fbLag,      pkt.faultLag,    'active');
   setBadge(fbBrownout, pkt.faultBrownout, 'active');
 
-  dsHeap.textContent  = `${pkt.freeHeapKb} kB`;
-  dsHwm.textContent   = `${pkt.ctrlHwm} B`;
   dsBoot.textContent  = pkt.bootCount.toString();
   dsReset.textContent = resetReasonStr(pkt.resetReason);
 
@@ -380,11 +369,9 @@ conn.onPacket = (packet: Packet): void => {
 
     // Populate per-move performance panel
     const ms = store.moveStats;
-    perfSkipped.textContent   = `${ms.peakSkippedSteps} steps`;
     perfMaxLag.textContent    = `${ms.peakLag} steps`;
     perfLagJitter.textContent = `${ms.lagJitter.toFixed(1)} steps`;
     perfEffort.textContent    = `${ms.effortPct.toFixed(1)}%`;
-    perfSkipped.className     = `metric-value ${health(ms.peakSkippedSteps, 1, 10)}`;
     perfMetrics.classList.remove('hidden');
 
     updateLinkStats(); // immediate refresh after STOP
