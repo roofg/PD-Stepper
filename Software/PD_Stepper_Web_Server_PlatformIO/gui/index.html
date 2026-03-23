@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PD-Stepper</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>PD-Stepper</h1>
+        <div id="conn-section">
+          <span id="conn-dot" class="dot disconnected"></span>
+          <span id="conn-status">Disconnected</span>
+          <button id="btn-connect">Connect</button>
+        </div>
+      </header>
+
+      <main>
+        <!-- Move Command -->
+        <section class="card" id="move-section">
+          <h2>Move Command</h2>
+          <form id="move-form">
+            <label>
+              Distance (steps)
+              <input type="number" id="inp-distance" value="3200" step="1" />
+            </label>
+            <label>
+              Speed (steps/s)
+              <input type="number" id="inp-speed" value="12000" step="100" min="1" />
+            </label>
+            <label>
+              Accel (steps/s²)
+              <input type="number" id="inp-accel" value="9000" step="100" min="1" />
+            </label>
+            <div class="form-actions">
+              <label>
+                <input type="checkbox" id="chk-abs" />
+                Absolute
+              </label>
+              <button type="submit" id="btn-move" disabled>▶ Move</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Settings -->
+        <section class="card" id="settings-section">
+          <h2>Settings</h2>
+          <label>
+            Run Current: <span id="current-val">60</span>%
+            <input
+              type="range"
+              id="slider-current"
+              min="10"
+              max="100"
+              value="60"
+              disabled
+            />
+          </label>
+          <button id="btn-apply-current" disabled>Apply Current</button>
+        </section>
+
+        <!-- Telemetry -->
+        <section class="card" id="telemetry-section">
+          <h2>Live Telemetry</h2>
+          <div id="tele-status" class="status stopped">● STOPPED</div>
+          <div class="metrics">
+            <div class="metric">
+              <span class="metric-label">Position (measured)</span>
+              <span class="metric-value" id="tele-meas">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Velocity (steps/s)</span>
+              <span class="metric-value" id="tele-vel">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Lag (steps)</span>
+              <span class="metric-value" id="tele-lag">—</span>
+            </div>
+          </div>
+          <div id="stop-info" class="stop-info hidden"></div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
