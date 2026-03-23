@@ -77,7 +77,6 @@ const dsPg          = document.getElementById('ds-pg')          as HTMLSpanEleme
 const dsCs          = document.getElementById('ds-cs')          as HTMLSpanElement;
 const dsCsBar       = document.getElementById('ds-cs-bar')      as HTMLDivElement;
 const dsPwm         = document.getElementById('ds-pwm')         as HTMLSpanElement;
-const dsTstep       = document.getElementById('ds-tstep')       as HTMLSpanElement;
 const dsSg          = document.getElementById('ds-sg')          as HTMLSpanElement;
 const dsStealth     = document.getElementById('ds-stealth')     as HTMLSpanElement;
 const dsStandstill2 = document.getElementById('ds-standstill')  as HTMLSpanElement;
@@ -387,12 +386,12 @@ conn.onStatus = (pkt: StatusPacket): void => {
   dsPg.textContent       = pkt.pgOk ? 'OK' : 'FAIL';
   dsPg.className         = `metric-value ${pkt.pgOk ? 'ok' : 'error'}`;
 
-  dsCs.textContent       = `${pkt.csActual} / 31`;
-  dsCsBar.style.width    = `${Math.round((pkt.csActual / 31) * 100)}%`;
-  dsPwm.textContent      = pkt.pwmScale.toString();
-  dsTstep.textContent    = pkt.tstep.toString();
-  dsSg.textContent       = pkt.sgResult.toString();
-  dsStealth.textContent  = pkt.stealthchopActive ? 'ON' : 'off';
+  const csPct = Math.round((pkt.csActual / 31) * 100);
+  dsCs.textContent       = `${csPct}%`;
+  dsCsBar.style.width    = `${csPct}%`;
+  dsPwm.textContent      = `${Math.round((pkt.pwmScale / 255) * 100)}%`;
+  dsSg.textContent       = `${Math.round((pkt.sgResult / 1023) * 100)}%`;
+  dsStealth.textContent  = pkt.stealthchopActive ? 'StealthChop' : 'SpreadCycle';
   dsStealth.className    = `metric-value ${pkt.stealthchopActive ? 'ok' : ''}`;
   dsStandstill2.textContent = pkt.standstill ? 'YES' : 'no';
 
