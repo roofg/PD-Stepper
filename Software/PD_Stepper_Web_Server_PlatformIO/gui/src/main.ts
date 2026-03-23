@@ -68,6 +68,7 @@ const setHoldDelay    = document.getElementById('set-hold-delay')     as HTMLInp
 const setStall        = document.getElementById('set-stall')          as HTMLInputElement;
 const setStandstill   = document.getElementById('set-standstill')     as HTMLSelectElement;
 const setStealthchop  = document.getElementById('set-stealthchop')    as HTMLInputElement;
+const setSpreadSpeed  = document.getElementById('set-spread-speed')   as HTMLInputElement;
 const setCoolstep     = document.getElementById('set-coolstep')       as HTMLInputElement;
 const btnApplyTmc     = document.getElementById('btn-apply-tmc')      as HTMLButtonElement;
 
@@ -148,6 +149,7 @@ function setSettingsEnabled(on: boolean): void {
   setStall.disabled       = !on;
   setStandstill.disabled  = !on;
   setStealthchop.disabled = !on;
+  setSpreadSpeed.disabled = !on;
   setCoolstep.disabled    = !on;
   btnApplyTmc.disabled    = !on;
 }
@@ -346,6 +348,7 @@ btnApplyTmc.addEventListener('click', () => {
   sendCmd({ cmd: 'set_stall_threshold',value: parseInt(setStall.value, 10) });
   sendCmd({ cmd: 'set_standstill_mode',value: setStandstill.value });
   sendCmd({ cmd: 'set_stealthchop',    value: setStealthchop.checked ? 1 : 0 });
+  sendCmd({ cmd: 'set_spread_cycle_speed', value: parseInt(setSpreadSpeed.value, 10) });
   sendCmd({ cmd: 'set_coolstep',       value: setCoolstep.checked ? 1 : 0 });
 });
 
@@ -366,6 +369,7 @@ conn.onSettings = (pkt: SettingsPacket): void => {
   setStall.value       = pkt.stallThreshold.toString();
   setStandstill.value  = standstillModes[pkt.standstillMode] ?? 'NORMAL';
   setStealthchop.checked = pkt.stealthchop;
+  setSpreadSpeed.value   = pkt.spreadCycleSpeed.toString();
   setCoolstep.checked    = pkt.coolstep;
 
   currentKp = pkt.kp;

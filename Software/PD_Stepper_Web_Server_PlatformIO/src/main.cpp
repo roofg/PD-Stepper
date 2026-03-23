@@ -44,6 +44,7 @@ static int   setHoldDelay   = 8;
 static char  standstillMode[16] = "NORMAL";
 static bool  stealthchopEnabled = true;
 static bool  coolstepEnabled    = true;
+static int   setSpreadCycleSpeed = 0;  // steps/s threshold for StealthChop→SpreadCycle (0 = disabled)
 static float setKp = 3.0f;
 static float setKd = 0.1f;
 static float setKv = 0.0f;
@@ -179,11 +180,11 @@ void setup() {
   Serial1.println("Setup complete");
 }
 
-/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 19 bytes) over USBSerial.
+/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 21 bytes) over USBSerial.
 /// Safe to call from setup() and processSerialCommands() (both run when
 /// TelemetryTask is idle).  g_usbWriteMutex serialises against DiagnosticsTask.
 void sendSettingsPacket() {
-  uint8_t buf[19];
+  uint8_t buf[21];
   buf[0] = 0xAA; buf[1] = 0xEE;
   buf[2] = (uint8_t)setVoltage;
   buf[3] = (uint8_t)setCurrent;
@@ -210,11 +211,13 @@ void sendSettingsPacket() {
   buf[14] = kdInt & 0xFF; buf[15] = kdInt >> 8;
   uint16_t kvInt = (uint16_t)(kvClamped * 100000.0f);
   buf[16] = kvInt & 0xFF; buf[17] = kvInt >> 8;
+  uint16_t spd = (uint16_t)setSpreadCycleSpeed;
+  buf[18] = spd & 0xFF; buf[19] = spd >> 8;
   uint8_t cs = 0;
-  for (int i = 2; i < 18; i++) cs ^= buf[i];
-  buf[18] = cs;
+  for (int i = 2; i < 20; i++) cs ^= buf[i];
+  buf[20] = cs;
   UsbWriteGuard guard;
-  if (guard) USBSerial.write(buf, 19);
+  if (guard) USBSerial.write(buf, 21);
 }
 
 void processSerialCommands() {
@@ -340,6 +343,16 @@ void processSerialCommands() {
               else if (strcmp(standstillMode, "STRONG_BRAKING") == 0) ssm = 3;
               tmc::setStandstillMode(ssm);
               Serial1.printf("Set standstill mode: %s\n", standstillMode);
+            }
+
+          } else if (strcmp(cmd, "set_spread_cycle_speed") == 0) {
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setSpreadCycleSpeed = doc["value"] | 0;
+              uint32_t tpwm = setSpreadCycleSpeed > 0 ? 12000000UL / (uint32_t)setSpreadCycleSpeed : 0;
+              tmc::setStealthChopThreshold(tpwm);
+              Serial1.printf("Set SpreadCycle speed: %d steps/s (TPWMTHRS=%lu)\n", setSpreadCycleSpeed, (unsigned long)tpwm);
             }
 
           } else if (strcmp(cmd, "set_stealthchop") == 0) {
@@ -500,6 +513,10 @@ void configureSettings() {
   else                    tmc::disableStealthChop();
   if (coolstepEnabled) tmc::enableCoolStep(1, 0);
   else                 tmc::disableCoolStep();
+
+  // Apply SpreadCycle speed threshold (TPWMTHRS register)
+  uint32_t tpwm = setSpreadCycleSpeed > 0 ? 12000000UL / (uint32_t)setSpreadCycleSpeed : 0;
+  tmc::setStealthChopThreshold(tpwm);
 }
 
 void readSettings() {
@@ -523,6 +540,7 @@ void readSettings() {
     standstillMode[sizeof(standstillMode) - 1] = '\0';
     stealthchopEnabled = preferences.getBool("stealthChop", true);
     coolstepEnabled    = preferences.getBool("coolStep",    true);
+    setSpreadCycleSpeed = preferences.getInt("spreadSpeed", 0);
     setKp = preferences.getFloat("kp", 3.0f);
     setKd = preferences.getFloat("kd", 0.1f);
     setKv = preferences.getFloat("kv", 0.0f);
@@ -544,6 +562,7 @@ void writeSettings() {
   preferences.putString("standstillMode", standstillMode);
   preferences.putBool("stealthChop",   stealthchopEnabled);
   preferences.putBool("coolStep",      coolstepEnabled);
+  preferences.putInt("spreadSpeed",    setSpreadCycleSpeed);
   preferences.putFloat("kp",           setKp);
   preferences.putFloat("kd",           setKd);
   preferences.putFloat("kv",           setKv);

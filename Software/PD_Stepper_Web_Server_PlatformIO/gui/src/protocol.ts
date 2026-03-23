@@ -4,7 +4,7 @@
  * Wire format (little-endian):
  *   UPDATE   0xAA 0xBB  33 bytes total  (mvel added at offset 30; checksum at 32)
  *   STOP     0xAA 0xCC  38 bytes total
- *   SETTINGS 0xAA 0xEE  19 bytes total
+ *   SETTINGS 0xAA 0xEE  21 bytes total
  *   STATUS   0xAA 0xDD  20 bytes total
  */
 
@@ -16,7 +16,7 @@ const STATUS_T   = 0xdd;
 
 const UPDATE_LEN   = 33;
 const STOP_LEN     = 38;
-const SETTINGS_LEN = 19;
+const SETTINGS_LEN = 21;
 const STATUS_LEN   = 20;
 
 export interface TelemetryUpdate {
@@ -43,7 +43,7 @@ export interface StopPacket {
 
 export type Packet = TelemetryUpdate | StopPacket;
 
-/** Settings snapshot from 0xAA 0xEE packet (19 bytes). */
+/** Settings snapshot from 0xAA 0xEE packet (21 bytes). */
 export interface SettingsPacket {
   voltage:        number;  // V (5/9/12/15/20)
   current:        number;  // run current %
@@ -57,6 +57,7 @@ export interface SettingsPacket {
   kp:             number;  // (kpInt / 1000)
   kd:             number;  // (kdInt / 10000)
   kv:             number;  // (kvInt / 100000)
+  spreadCycleSpeed: number; // steps/s threshold (0 = disabled)
 }
 
 /** Driver status snapshot from 0xAA 0xDD packet (20 bytes). */
@@ -204,10 +205,10 @@ export class PacketParser {
 
       } else if (type === SETTINGS_T) {
         if (this.buf.length < SETTINGS_LEN) return;
-        // Validate XOR checksum over bytes [2..17]
+        // Validate XOR checksum over bytes [2..19]
         let cs = 0;
-        for (let i = 2; i < 18; i++) cs ^= this.buf[i];
-        if (cs !== this.buf[18]) {
+        for (let i = 2; i < 20; i++) cs ^= this.buf[i];
+        if (cs !== this.buf[20]) {
           this._stats.checksumErrors++;
           if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
           this.buf.shift();
@@ -228,6 +229,7 @@ export class PacketParser {
           kp:             (b[12] | (b[13] << 8)) / 1000,
           kd:             (b[14] | (b[15] << 8)) / 10000,
           kv:             (b[16] | (b[17] << 8)) / 100000,
+          spreadCycleSpeed: b[18] | (b[19] << 8),
         };
         this.onSettings?.(settings);
 

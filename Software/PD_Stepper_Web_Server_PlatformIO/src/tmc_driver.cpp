@@ -92,6 +92,10 @@ void setAllCurrentValues(int run, int hold, int delay) {
   TmcLock g; if (g) stepper_driver.setAllCurrentValues(run, hold, delay);
 }
 
+void setStealthChopThreshold(uint32_t tpwmthrs) {
+  TmcLock g; if (g) stepper_driver.setStealthChopDurationThreshold(tpwmthrs);
+}
+
 // --- Diagnostic reads (safe from any Core 0 context via mutex) ---
 
 DriverStatus getDriverStatus() {

@@ -48,6 +48,7 @@ void setStallGuardThreshold(int th);
 void setStandstillMode(int mode);
 void setHoldDelay(int percent);
 void setAllCurrentValues(int run, int hold, int delay);
+void setStealthChopThreshold(uint32_t tpwmthrs);
 
 // Diagnostic reads — call from Core 0 only (uses TMC UART)
 DriverStatus  getDriverStatus();
