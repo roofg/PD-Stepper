@@ -214,7 +214,12 @@ conn.onConnectionChange = (connected: boolean): void => {
     syncIndicator.classList.remove('hidden');
     linkInterval = setInterval(updateLinkStats, 1000);
     updateLinkStats();
-    conn.write('{"cmd":"get_settings"}\n').catch(() => undefined);
+    // Delay past the 150 ms drain window in serial.ts — the firmware responds
+    // to get_settings in <10 ms, so sending immediately would land inside the
+    // drain window and get silently discarded.
+    setTimeout(() => {
+      conn.write('{"cmd":"get_settings"}\n').catch(() => undefined);
+    }, 200);
   }
 };
 
