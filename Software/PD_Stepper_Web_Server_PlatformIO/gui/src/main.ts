@@ -27,8 +27,6 @@ const teleLag         = document.getElementById('tele-lag')           as HTMLSpa
 const teleMaxLag      = document.getElementById('tele-max-lag')       as HTMLSpanElement;
 const teleSkipped     = document.getElementById('tele-skipped')       as HTMLSpanElement;
 const teleStatus      = document.getElementById('tele-status')        as HTMLDivElement;
-const stopInfo        = document.getElementById('stop-info')          as HTMLDivElement;
-const perfMetrics     = document.getElementById('perf-metrics')       as HTMLDivElement;
 const perfMaxLag      = document.getElementById('perf-max-lag')       as HTMLSpanElement;
 const perfLagJitter   = document.getElementById('perf-lag-jitter')    as HTMLSpanElement;
 const perfEffort      = document.getElementById('perf-effort')        as HTMLSpanElement;
@@ -36,7 +34,6 @@ const chartContainer  = document.getElementById('chart-container')    as HTMLDiv
 const btnResetChart   = document.getElementById('btn-reset-chart')    as HTMLButtonElement;
 
 // Hold accuracy section
-const holdAccuracy    = document.getElementById('hold-accuracy')      as HTMLDivElement;
 const devNeedle       = document.getElementById('dev-needle')         as HTMLDivElement;
 const holdDev         = document.getElementById('hold-dev')           as HTMLSpanElement;
 const holdPeakDev     = document.getElementById('hold-peak-dev')      as HTMLSpanElement;
@@ -183,6 +180,25 @@ function setMotionState(state: MotionState): void {
 // Gauge range: ±DEV_RANGE steps maps to full width
 const DEV_RANGE = 20;
 
+/** Reset Move Performance and Hold Accuracy to dimmed placeholders */
+function resetPerfAndHold(): void {
+  perfMaxLag.textContent    = '–';
+  perfLagJitter.textContent = '–';
+  perfEffort.textContent    = '–';
+  perfMaxLag.classList.add('dimmed');
+  perfLagJitter.classList.add('dimmed');
+  perfEffort.classList.add('dimmed');
+
+  holdDev.textContent       = '–';
+  holdPeakDev.textContent   = '–';
+  holdSettleTime.textContent = '–';
+  holdDev.className         = 'metric-value dev-value dimmed';
+  holdPeakDev.classList.add('dimmed');
+  holdSettleTime.classList.add('dimmed');
+  devNeedle.style.left      = '50%';
+}
+resetPerfAndHold();
+
 function updateDeviationGauge(lag: number): void {
   // Needle position: 50% = center, clamp to [2%, 98%]
   const pct = Math.max(2, Math.min(98, 50 + (lag / DEV_RANGE) * 50));
@@ -304,9 +320,7 @@ btnResetChart.addEventListener('click', () => {
 
 moveForm.addEventListener('submit', (e: Event) => {
   e.preventDefault();
-  stopInfo.classList.add('hidden');
-  perfMetrics.classList.add('hidden');
-  holdAccuracy.classList.add('hidden');
+  resetPerfAndHold();
   setMotionState('moving');
   store.clear();
   chart.update(store);
@@ -462,8 +476,6 @@ conn.onPacket = (packet: Packet): void => {
   } else {
     stopsReceived++;
     teleMeas.textContent = packet.pos.toString();
-    stopInfo.textContent = `Stopped at ${packet.pos} steps — ${packet.reason}`;
-    stopInfo.classList.remove('hidden');
 
     // Enter hold phase for deviation tracking
     const isNormalStop = !packet.reason.includes('Fault') && !packet.reason.includes('E-STOP');
@@ -471,20 +483,24 @@ conn.onPacket = (packet: Packet): void => {
       store.enterHoldPhase();
       stopReceivedAt = Date.now();
       setMotionState('correcting');
-      holdAccuracy.classList.remove('hidden');
       holdSettleTime.textContent = '…';
+      holdSettleTime.classList.remove('dimmed');
       holdPeakDev.textContent = '—';
+      holdPeakDev.classList.remove('dimmed');
+      holdDev.classList.remove('dimmed');
       updateDeviationGauge(0);
     } else {
       setMotionState('idle');
     }
 
-    // Populate per-move performance panel
+    // Populate per-move performance panel (undim values)
     const ms = store.moveStats;
     perfMaxLag.textContent    = `${ms.peakLag} steps`;
     perfLagJitter.textContent = `${ms.lagJitter.toFixed(1)} steps`;
     perfEffort.textContent    = `${ms.effortPct.toFixed(1)}%`;
-    perfMetrics.classList.remove('hidden');
+    perfMaxLag.classList.remove('dimmed');
+    perfLagJitter.classList.remove('dimmed');
+    perfEffort.classList.remove('dimmed');
 
     updateLinkStats();
   }

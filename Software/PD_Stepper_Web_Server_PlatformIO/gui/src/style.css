@@ -212,6 +212,7 @@ button.connected:hover  { background: var(--red); }
   color: var(--text-dim);
 }
 .hidden { display: none; }
+.dimmed { opacity: 0.35; }
 
 /* ── Health colour classes (applied dynamically to .metric-value) ─────────── */
 .ok    { color: var(--text); }
