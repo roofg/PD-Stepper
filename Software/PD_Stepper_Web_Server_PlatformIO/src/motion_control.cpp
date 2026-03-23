@@ -692,8 +692,10 @@ static void ControlTask(void *) {
                         stepgen::setVelocity(correction);
                     }
                 }
-                // Hold telemetry at 10 Hz — lets the GUI chart the settle phase
-                if (millis() - lastTeleMs >= 100) {
+                // Hold telemetry: 100 Hz while correcting (matches motion rate so the
+                // settle transient is fully visible in the chart), 10 Hz once settled.
+                const uint32_t holdTeleInterval = (g_hold_state == HOLD_CORRECTING) ? 10 : 100;
+                if (millis() - lastTeleMs >= holdTeleInterval) {
                     float dt_s  = (millis() - lastTeleMs) / 1000.0f;
                     lastTeleMs  = millis();
                     float mVel  = (float)(encCounts - lastTeleEnc)
