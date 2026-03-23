@@ -633,6 +633,10 @@ static void ControlTask(void *) {
     long     lastTeleEnc  = 0;
     uint8_t  estopCount   = 0; // consecutive LOW reads needed to trip E-stop
 
+    // AUX diagnostic state for hold-phase telemetry rate verification
+    uint32_t holdDiagCount  = 0;
+    uint32_t holdDiagLastMs = 0;
+
     TickType_t xLastWake  = xTaskGetTickCount();
 
     for (;;) {
@@ -719,12 +723,30 @@ static void ControlTask(void *) {
                         d.mvel      = (int16_t)mVel;
                         xQueueSend(s_teleQueue, &d, 0);
                     }
+
+                    // AUX diagnostic: log hold tele rate and velocity.
+                    // Prints on packet #1 (hold entry), then every 20 packets,
+                    // so at 100 Hz we see a line every ~200 ms; at 10 Hz every 2 s.
+                    holdDiagCount++;
+                    if (holdDiagCount == 1 || holdDiagCount % 20 == 0) {
+                        uint32_t gapMs = (holdDiagLastMs > 0)
+                                         ? (uint32_t)(millis() - holdDiagLastMs) * 20
+                                         : 0; // extrapolated rate window
+                        Serial1.printf("DBG:HOLD #%lu interval=%lu mVel=%.1f lag=%d state=%s gap=%lums\n",
+                                       holdDiagCount, holdTeleInterval, mVel,
+                                       (int)(g_hold_target - measPos),
+                                       g_hold_state == HOLD_CORRECTING ? "CORR" : "SETT",
+                                       gapMs);
+                        holdDiagLastMs = millis();
+                    }
                 }
             } else {
                 stepgen::setVelocity(0.0f);
                 pd.reset();
-                g_hold_state = HOLD_CORRECTING;
+                g_hold_state     = HOLD_CORRECTING;
                 g_settle_start_ms = 0; // ensure clean state for next hold activation
+                holdDiagCount    = 0;  // reset per-hold diagnostic counter
+                holdDiagLastMs   = 0;
             }
             continue;
         }
