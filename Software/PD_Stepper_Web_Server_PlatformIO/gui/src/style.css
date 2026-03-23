@@ -32,7 +32,7 @@ h2 {
   margin-bottom: 14px;
 }
 
-#app { max-width: 960px; margin: 0 auto; padding: 16px; }
+#app { max-width: 1400px; margin: 0 auto; padding: 0 10px 10px; }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 header {
@@ -43,7 +43,7 @@ header {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
 
 #conn-section { display: flex; align-items: center; gap: 10px; }
@@ -59,23 +59,21 @@ header {
 /* ── Grid ───────────────────────────────────────────────────────────────── */
 main {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  grid-template-columns: 360px 1fr;
+  gap: 12px;
+  align-items: start;
 }
-@media (max-width: 560px) { main { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { main { grid-template-columns: 1fr; } }
 
-#telemetry-section    { grid-column: 1 / -1; }
-#chart-section        { grid-column: 1 / -1; }
-#usb-section          { grid-column: 1 / -1; }
-#tmc-settings-section { grid-column: 1 / -1; }
-#driver-status-section { grid-column: 1 / -1; }
+#settings-pane  { display: flex; flex-direction: column; gap: 12px; }
+#telemetry-pane { display: flex; flex-direction: column; gap: 12px; }
 
 /* ── Card ───────────────────────────────────────────────────────────────── */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 16px;
+  padding: 12px;
 }
 
 /* ── Form inputs ────────────────────────────────────────────────────────── */
@@ -140,8 +138,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 button.connected        { background: #374151; }
 button.connected:hover  { background: var(--red); }
 
-#btn-apply-current { margin-top: 6px; }
-
 /* ── Telemetry section ──────────────────────────────────────────────────── */
 .status {
   font-size: 12px;
@@ -163,7 +159,7 @@ button.connected:hover  { background: var(--red); }
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 10px 14px;
+  padding: 8px 10px;
 }
 .metric-label {
   display: block;
@@ -174,7 +170,7 @@ button.connected:hover  { background: var(--red); }
 .metric-value {
   display: block;
   font-family: var(--mono);
-  font-size: 1.5rem;
+  font-size: 1.2rem;
   font-weight: 700;
 }
 
@@ -267,10 +263,17 @@ select:disabled { opacity: 0.4; }
   flex-shrink: 0;
   margin-bottom: 0;
 }
+.btn-apply-group {
+  margin-top: 10px;
+  width: 100%;
+  padding: 7px 16px;
+  font-size: 12px;
+}
 .btn-save {
   margin-top: 12px;
   width: 100%;
 }
+.pane-save { margin-top: 4px; width: 100%; }
 
 /* ── Toggle switch ──────────────────────────────────────────────────────── */
 .toggle-row .settings-label { flex-direction: row; align-items: center; gap: 8px; }

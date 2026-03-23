@@ -47,9 +47,7 @@ const linkDrain       = document.getElementById('link-drain')         as HTMLSpa
 const setKp           = document.getElementById('set-kp')             as HTMLInputElement;
 const setKd           = document.getElementById('set-kd')             as HTMLInputElement;
 const setKv           = document.getElementById('set-kv')             as HTMLInputElement;
-const btnApplyKp      = document.getElementById('btn-apply-kp')       as HTMLButtonElement;
-const btnApplyKd      = document.getElementById('btn-apply-kd')       as HTMLButtonElement;
-const btnApplyKv      = document.getElementById('btn-apply-kv')       as HTMLButtonElement;
+const btnApplyPd      = document.getElementById('btn-apply-pd')       as HTMLButtonElement;
 const btnSave         = document.getElementById('btn-save')           as HTMLButtonElement;
 const syncIndicator   = document.getElementById('settings-sync-indicator') as HTMLDivElement;
 
@@ -63,15 +61,7 @@ const setStall        = document.getElementById('set-stall')          as HTMLInp
 const setStandstill   = document.getElementById('set-standstill')     as HTMLSelectElement;
 const setStealthchop  = document.getElementById('set-stealthchop')    as HTMLInputElement;
 const setCoolstep     = document.getElementById('set-coolstep')       as HTMLInputElement;
-const btnApplyVoltage    = document.getElementById('btn-apply-voltage')    as HTMLButtonElement;
-const btnApplyMicrosteps = document.getElementById('btn-apply-microsteps') as HTMLButtonElement;
-const btnApplyCurrent    = document.getElementById('btn-apply-current')    as HTMLButtonElement;
-const btnApplyHoldCurrent= document.getElementById('btn-apply-hold-current') as HTMLButtonElement;
-const btnApplyHoldDelay  = document.getElementById('btn-apply-hold-delay') as HTMLButtonElement;
-const btnApplyStall      = document.getElementById('btn-apply-stall')      as HTMLButtonElement;
-const btnApplyStandstill = document.getElementById('btn-apply-standstill') as HTMLButtonElement;
-const btnApplyStealthchop= document.getElementById('btn-apply-stealthchop') as HTMLButtonElement;
-const btnApplyCoolstep   = document.getElementById('btn-apply-coolstep')   as HTMLButtonElement;
+const btnApplyTmc     = document.getElementById('btn-apply-tmc')      as HTMLButtonElement;
 
 // Driver status card
 const dsVbus        = document.getElementById('ds-vbus')        as HTMLSpanElement;
@@ -125,9 +115,7 @@ function setControlsEnabled(on: boolean): void {
   setKp.disabled           = !on;
   setKd.disabled           = !on;
   setKv.disabled           = !on;
-  btnApplyKp.disabled      = !on;
-  btnApplyKd.disabled      = !on;
-  btnApplyKv.disabled      = !on;
+  btnApplyPd.disabled      = !on;
   btnSave.disabled         = !on;
   setVoltage.disabled      = !on;
   setMicrosteps.disabled   = !on;
@@ -138,15 +126,7 @@ function setControlsEnabled(on: boolean): void {
   setStandstill.disabled   = !on;
   setStealthchop.disabled  = !on;
   setCoolstep.disabled     = !on;
-  btnApplyVoltage.disabled    = !on;
-  btnApplyMicrosteps.disabled = !on;
-  btnApplyCurrent.disabled    = !on;
-  btnApplyHoldCurrent.disabled = !on;
-  btnApplyHoldDelay.disabled  = !on;
-  btnApplyStall.disabled      = !on;
-  btnApplyStandstill.disabled = !on;
-  btnApplyStealthchop.disabled = !on;
-  btnApplyCoolstep.disabled   = !on;
+  btnApplyTmc.disabled     = !on;
 }
 
 function setMotionStatus(moving: boolean): void {
@@ -269,46 +249,25 @@ function sendCmd(obj: Record<string, unknown>): void {
   conn.write(JSON.stringify(obj) + '\n').catch(() => undefined);
 }
 
-btnApplyKp.addEventListener('click', () => {
+btnApplyPd.addEventListener('click', () => {
   currentKp = parseFloat(setKp.value);
-  sendCmd({ cmd: 'set_pd', kp: currentKp, kd: currentKd });
-});
-btnApplyKd.addEventListener('click', () => {
   currentKd = parseFloat(setKd.value);
   sendCmd({ cmd: 'set_pd', kp: currentKp, kd: currentKd });
-});
-btnApplyKv.addEventListener('click', () => {
   sendCmd({ cmd: 'set_phase_lead', kv: parseFloat(setKv.value) });
 });
 btnSave.addEventListener('click', () => {
   sendCmd({ cmd: 'save' });
 });
-btnApplyVoltage.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_voltage', value: parseInt(setVoltage.value, 10) });
-});
-btnApplyMicrosteps.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_microsteps', value: parseInt(setMicrosteps.value, 10) });
-});
-btnApplyCurrent.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_current', value: parseInt(setCurrent.value, 10) });
-});
-btnApplyHoldCurrent.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_hold_current', value: parseInt(setHoldCurrent.value, 10) });
-});
-btnApplyHoldDelay.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_hold_delay', value: parseInt(setHoldDelay.value, 10) });
-});
-btnApplyStall.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_stall_threshold', value: parseInt(setStall.value, 10) });
-});
-btnApplyStandstill.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_standstill_mode', value: setStandstill.value });
-});
-btnApplyStealthchop.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_stealthchop', value: setStealthchop.checked ? 1 : 0 });
-});
-btnApplyCoolstep.addEventListener('click', () => {
-  sendCmd({ cmd: 'set_coolstep', value: setCoolstep.checked ? 1 : 0 });
+btnApplyTmc.addEventListener('click', () => {
+  sendCmd({ cmd: 'set_voltage',        value: parseInt(setVoltage.value, 10) });
+  sendCmd({ cmd: 'set_microsteps',     value: parseInt(setMicrosteps.value, 10) });
+  sendCmd({ cmd: 'set_current',        value: parseInt(setCurrent.value, 10) });
+  sendCmd({ cmd: 'set_hold_current',   value: parseInt(setHoldCurrent.value, 10) });
+  sendCmd({ cmd: 'set_hold_delay',     value: parseInt(setHoldDelay.value, 10) });
+  sendCmd({ cmd: 'set_stall_threshold',value: parseInt(setStall.value, 10) });
+  sendCmd({ cmd: 'set_standstill_mode',value: setStandstill.value });
+  sendCmd({ cmd: 'set_stealthchop',    value: setStealthchop.checked ? 1 : 0 });
+  sendCmd({ cmd: 'set_coolstep',       value: setCoolstep.checked ? 1 : 0 });
 });
 
 // ── Settings packet handler ────────────────────────────────────────────────────
