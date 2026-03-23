@@ -692,6 +692,32 @@ static void ControlTask(void *) {
                         stepgen::setVelocity(correction);
                     }
                 }
+                // Hold telemetry at 10 Hz — lets the GUI chart the settle phase
+                if (millis() - lastTeleMs >= 100) {
+                    float dt_s  = (millis() - lastTeleMs) / 1000.0f;
+                    lastTeleMs  = millis();
+                    float mVel  = (float)(encCounts - lastTeleEnc)
+                                  * counts_to_steps / (dt_s > 0.001f ? dt_s : 0.1f);
+                    lastTeleEnc = encCounts;
+
+                    if (s_teleQueue) {
+                        TelemetryData d;
+                        d.type      = TELEMETRY_UPDATE;
+                        d.timestamp = micros();
+                        d.pos       = stepgen::getStepCount();
+                        d.meas      = (long)measPos;
+                        d.target    = (long)g_hold_target;
+                        d.lag       = (int)(g_hold_target - measPos);
+                        d.vel       = 0;
+                        d.p_acc     = 0;
+                        d.p_dist    = 0;
+                        d.sg_result = g_sg_result;
+                        d.cs_actual = g_cs_actual_cache;
+                        d.pwm_scale = g_pwm_scale_cache;
+                        d.mvel      = (int16_t)mVel;
+                        xQueueSend(s_teleQueue, &d, 0);
+                    }
+                }
             } else {
                 stepgen::setVelocity(0.0f);
                 pd.reset();

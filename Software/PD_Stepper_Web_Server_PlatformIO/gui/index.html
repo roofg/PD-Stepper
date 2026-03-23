@@ -245,11 +245,15 @@
           <!-- Live Telemetry -->
           <section class="card" id="telemetry-section">
             <h2>Live Telemetry</h2>
-            <div id="tele-status" class="status stopped">● STOPPED</div>
+            <div id="tele-status" class="status stopped">● IDLE</div>
             <div class="metrics">
               <div class="metric">
                 <span class="metric-label">Position (measured)</span>
                 <span class="metric-value" id="tele-meas">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Position (target)</span>
+                <span class="metric-value" id="tele-target">—</span>
               </div>
               <div class="metric">
                 <span class="metric-label">Velocity (steps/s)</span>
@@ -258,6 +262,10 @@
               <div class="metric">
                 <span class="metric-label">Lag (steps)</span>
                 <span class="metric-value" id="tele-lag">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Max Lag (steps)</span>
+                <span class="metric-value" id="tele-max-lag">—</span>
               </div>
               <div class="metric">
                 <span class="metric-label">Skipped Steps</span>
@@ -280,6 +288,36 @@
                 <div class="metric">
                   <span class="metric-label">Controller Effort</span>
                   <span class="metric-value" id="perf-effort">—</span>
+                </div>
+              </div>
+            </div>
+            <!-- Hold accuracy — shown after STOP, updates live during hold -->
+            <div id="hold-accuracy" class="hidden">
+              <h3 class="hold-accuracy-heading">Hold Accuracy</h3>
+              <div class="dev-gauge" id="dev-gauge">
+                <div class="dev-gauge-zones">
+                  <div class="dev-zone red"></div>
+                  <div class="dev-zone amber"></div>
+                  <div class="dev-zone green"></div>
+                  <div class="dev-zone green"></div>
+                  <div class="dev-zone amber"></div>
+                  <div class="dev-zone red"></div>
+                </div>
+                <div class="dev-gauge-center"></div>
+                <div class="dev-gauge-needle" id="dev-needle"></div>
+              </div>
+              <div class="metrics">
+                <div class="metric">
+                  <span class="metric-label">Deviation</span>
+                  <span class="metric-value dev-value" id="hold-dev">±0</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">Peak Deviation</span>
+                  <span class="metric-value" id="hold-peak-dev">—</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">Settle Time</span>
+                  <span class="metric-value" id="hold-settle-time">—</span>
                 </div>
               </div>
             </div>

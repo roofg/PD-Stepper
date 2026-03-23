@@ -18,6 +18,7 @@ export interface MoveStats {
   peakLag:          number;  // max |lag| over the move (steps)
   lagJitter:        number;  // rolling σ of last N lag samples (steps)
   effortPct:        number;  // |lag| / max(|vel|, 1) × 100 — PD working hard?
+  holdPeakDev:      number;  // max |lag| during hold phase (after STOP)
 }
 
 export class TelemetryStore {
@@ -41,12 +42,14 @@ export class TelemetryStore {
   private _peakSkippedSteps = 0;
   private _peakLag = 0;
   private _lagWindow: number[] = [];
+  private _holdPhase = false;
+  private _holdPeakDev = 0;
 
   get length(): number { return this._t.length; }
 
   get moveStats(): MoveStats {
     const pkt = this._lastPkt;
-    if (!pkt) return { skippedSteps: 0, peakSkippedSteps: 0, peakLag: 0, lagJitter: 0, effortPct: 0 };
+    if (!pkt) return { skippedSteps: 0, peakSkippedSteps: 0, peakLag: 0, lagJitter: 0, effortPct: 0, holdPeakDev: 0 };
     const skippedSteps = (pkt.pos - pkt.meas) - (this._pos0 - this._meas0);
     return {
       skippedSteps,
@@ -54,6 +57,7 @@ export class TelemetryStore {
       peakLag:          this._peakLag,
       lagJitter:        this._lagJitter(),
       effortPct:        Math.abs(pkt.lag) / Math.max(Math.abs(pkt.vel), 1) * 100,
+      holdPeakDev:      this._holdPeakDev,
     };
   }
 
@@ -74,10 +78,18 @@ export class TelemetryStore {
     this._peakSkippedSteps = 0;
     this._peakLag = 0;
     this._lagWindow = [];
+    this._holdPhase = false;
+    this._holdPeakDev = 0;
     this._t.length = this._meas.length = this._target.length =
     this._lag.length = this._vel.length = this._accel.length =
     this._pos.length = this._dist.length = this._stallguard.length =
     this._csActual.length = this._pwmScale.length = 0;
+  }
+
+  /** Mark the start of hold phase — peak deviation tracking begins. */
+  enterHoldPhase(): void {
+    this._holdPhase = true;
+    this._holdPeakDev = 0;
   }
 
   push(pkt: TelemetryUpdate): void {
@@ -87,12 +99,16 @@ export class TelemetryStore {
       this._meas0 = pkt.meas;
     }
 
-    const t = (pkt.timestamp - this._startTs) / 1_000_000; // µs → s
+    // unsigned 32-bit delta handles micros() wrap at ~71.6 min
+    const t = ((pkt.timestamp - this._startTs) >>> 0) / 1_000_000; // µs → s
 
     this._lastPkt = pkt;
     const relSkipped = Math.abs((pkt.pos - pkt.meas) - (this._pos0 - this._meas0));
     if (relSkipped > this._peakSkippedSteps) this._peakSkippedSteps = relSkipped;
     if (Math.abs(pkt.lag) > this._peakLag) this._peakLag = Math.abs(pkt.lag);
+    if (this._holdPhase && Math.abs(pkt.lag) > this._holdPeakDev) {
+      this._holdPeakDev = Math.abs(pkt.lag);
+    }
     this._lagWindow.push(pkt.lag);
     if (this._lagWindow.length > LAG_WINDOW) this._lagWindow.shift();
 

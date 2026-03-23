@@ -21,8 +21,10 @@ const inpSpeed        = document.getElementById('inp-speed')          as HTMLInp
 const inpAccel        = document.getElementById('inp-accel')          as HTMLInputElement;
 const chkAbs          = document.getElementById('chk-abs')            as HTMLInputElement;
 const teleMeas        = document.getElementById('tele-meas')          as HTMLSpanElement;
+const teleTarget      = document.getElementById('tele-target')        as HTMLSpanElement;
 const teleVel         = document.getElementById('tele-vel')           as HTMLSpanElement;
 const teleLag         = document.getElementById('tele-lag')           as HTMLSpanElement;
+const teleMaxLag      = document.getElementById('tele-max-lag')       as HTMLSpanElement;
 const teleSkipped     = document.getElementById('tele-skipped')       as HTMLSpanElement;
 const teleStatus      = document.getElementById('tele-status')        as HTMLDivElement;
 const stopInfo        = document.getElementById('stop-info')          as HTMLDivElement;
@@ -31,6 +33,13 @@ const perfMaxLag      = document.getElementById('perf-max-lag')       as HTMLSpa
 const perfLagJitter   = document.getElementById('perf-lag-jitter')    as HTMLSpanElement;
 const perfEffort      = document.getElementById('perf-effort')        as HTMLSpanElement;
 const chartContainer  = document.getElementById('chart-container')    as HTMLDivElement;
+
+// Hold accuracy section
+const holdAccuracy    = document.getElementById('hold-accuracy')      as HTMLDivElement;
+const devNeedle       = document.getElementById('dev-needle')         as HTMLDivElement;
+const holdDev         = document.getElementById('hold-dev')           as HTMLSpanElement;
+const holdPeakDev     = document.getElementById('hold-peak-dev')      as HTMLSpanElement;
+const holdSettleTime  = document.getElementById('hold-settle-time')   as HTMLSpanElement;
 
 // USB link card
 const linkUpdates     = document.getElementById('link-updates')       as HTMLSpanElement;
@@ -148,9 +157,45 @@ function setControlsEnabled(on: boolean): void {
   setSettingsEnabled(on);
 }
 
-function setMotionStatus(moving: boolean): void {
-  teleStatus.textContent = moving ? '● MOVING' : '● STOPPED';
-  teleStatus.className   = `status ${moving ? 'moving' : 'stopped'}`;
+// ── Motion state machine ──────────────────────────────────────────────────────
+
+type MotionState = 'idle' | 'moving' | 'correcting' | 'holding';
+
+let motionState: MotionState = 'idle';
+let stopReceivedAt = 0;  // timestamp for settle time computation
+
+const STATE_LABELS: Record<MotionState, string> = {
+  idle:       '● IDLE',
+  moving:     '● MOVING',
+  correcting: '● CORRECTING',
+  holding:    '● HOLDING',
+};
+
+function setMotionState(state: MotionState): void {
+  if (state === motionState) return;
+  motionState = state;
+  teleStatus.textContent = STATE_LABELS[state];
+  teleStatus.className   = `status ${state}`;
+}
+
+// Gauge range: ±DEV_RANGE steps maps to full width
+const DEV_RANGE = 20;
+
+function updateDeviationGauge(lag: number): void {
+  // Needle position: 50% = center, clamp to [2%, 98%]
+  const pct = Math.max(2, Math.min(98, 50 + (lag / DEV_RANGE) * 50));
+  devNeedle.style.left = `${pct}%`;
+
+  // Colour class based on magnitude
+  const absLag = Math.abs(lag);
+  let cls: string;
+  if (absLag <= 6)       cls = 'dev-green';
+  else if (absLag <= 12) cls = 'dev-amber';
+  else                   cls = 'dev-red';
+
+  const sign = lag >= 0 ? '+' : '';
+  holdDev.textContent = `${sign}${lag} steps`;
+  holdDev.className   = `metric-value dev-value ${cls}`;
 }
 
 // ── Health colour helpers ─────────────────────────────────────────────────────
@@ -214,7 +259,7 @@ conn.onConnectionChange = (connected: boolean): void => {
   if (!connected) {
     settingsReceived = false;
     setControlsEnabled(false);
-    setMotionStatus(false);
+    setMotionState('idle');
     btnEstop.disabled = true;
     if (linkInterval) { clearInterval(linkInterval); linkInterval = null; }
   } else {
@@ -254,7 +299,8 @@ moveForm.addEventListener('submit', (e: Event) => {
   e.preventDefault();
   stopInfo.classList.add('hidden');
   perfMetrics.classList.add('hidden');
-  setMotionStatus(true);
+  holdAccuracy.classList.add('hidden');
+  setMotionState('moving');
   store.clear();
   chart.update(store);
   movesSent++;
@@ -266,7 +312,7 @@ moveForm.addEventListener('submit', (e: Event) => {
   );
   conn.write(cmd).catch((err: unknown) => {
     movesSent--;
-    setMotionStatus(false);
+    setMotionState('idle');
     alert(`Send error: ${err instanceof Error ? err.message : String(err)}`);
   });
 });
@@ -359,6 +405,21 @@ conn.onStatus = (pkt: StatusPacket): void => {
   setBadge(fbHoldActive,  pkt.holdActive,  'ok');
   setBadge(fbHoldSettled, pkt.holdSettled, 'ok');
 
+  // Derive motion state from authoritative STATUS flags
+  if (pkt.isRunning) {
+    setMotionState('moving');
+  } else if (pkt.holdActive && !pkt.holdSettled) {
+    setMotionState('correcting');
+  } else if (pkt.holdActive && pkt.holdSettled) {
+    // Record settle time on first transition to HOLDING
+    if (motionState === 'correcting' && stopReceivedAt > 0) {
+      holdSettleTime.textContent = `${Date.now() - stopReceivedAt} ms`;
+    }
+    setMotionState('holding');
+  } else {
+    setMotionState('idle');
+  }
+
   // Gate TMC settings apply button during motion — firmware rejects those commands anyway
   if (settingsReceived) {
     btnApplyTmc.disabled = pkt.isRunning;
@@ -370,17 +431,39 @@ conn.onStatus = (pkt: StatusPacket): void => {
 conn.onPacket = (packet: Packet): void => {
   if (packet.type === 'update') {
     teleMeas.textContent    = packet.meas.toString();
+    teleTarget.textContent  = packet.target.toString();
     teleVel.textContent     = packet.vel.toString();
     teleLag.textContent     = packet.lag.toString();
     store.push(packet);
-    teleSkipped.textContent = store.moveStats.skippedSteps.toString();
-    _chartDirty = true;  // chart renders on next rAF tick (~60 Hz), not on every packet
+    const ms = store.moveStats;
+    teleMaxLag.textContent  = ms.peakLag.toString();
+    teleSkipped.textContent = ms.skippedSteps.toString();
+    _chartDirty = true;
+
+    // Update hold accuracy gauge if in hold phase
+    if (motionState === 'correcting' || motionState === 'holding') {
+      updateDeviationGauge(packet.lag);
+      holdPeakDev.textContent = `${ms.holdPeakDev} steps`;
+    }
   } else {
     stopsReceived++;
-    setMotionStatus(false);
     teleMeas.textContent = packet.pos.toString();
     stopInfo.textContent = `Stopped at ${packet.pos} steps — ${packet.reason}`;
     stopInfo.classList.remove('hidden');
+
+    // Enter hold phase for deviation tracking
+    const isNormalStop = !packet.reason.includes('Fault') && !packet.reason.includes('E-STOP');
+    if (isNormalStop) {
+      store.enterHoldPhase();
+      stopReceivedAt = Date.now();
+      setMotionState('correcting');
+      holdAccuracy.classList.remove('hidden');
+      holdSettleTime.textContent = '…';
+      holdPeakDev.textContent = '—';
+      updateDeviationGauge(0);
+    } else {
+      setMotionState('idle');
+    }
 
     // Populate per-move performance panel
     const ms = store.moveStats;
@@ -389,6 +472,6 @@ conn.onPacket = (packet: Packet): void => {
     perfEffort.textContent    = `${ms.effortPct.toFixed(1)}%`;
     perfMetrics.classList.remove('hidden');
 
-    updateLinkStats(); // immediate refresh after STOP
+    updateLinkStats();
   }
 };
