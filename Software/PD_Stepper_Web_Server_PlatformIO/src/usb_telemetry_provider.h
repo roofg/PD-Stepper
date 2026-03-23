@@ -46,8 +46,9 @@ struct UsbWriteGuard {
  *   26      2     sg_result  (uint16_t, stallguard result)
  *   28      1     cs_actual  (uint8_t, 0-31, TMC current scale)
  *   29      1     pwm_scale  (uint8_t, 0-255, TMC PWM duty)
- *   30      1     checksum   (XOR of bytes 2..29)
- *        Total = 31 bytes per telemetry packet
+ *   30      2     mvel       (int16_t, steps/s, measured encoder velocity)
+ *   32      1     checksum   (XOR of bytes 2..31)
+ *        Total = 33 bytes per telemetry packet
  *
  * NOTE: firmware and GUI must be updated together — packet layout change.
  *
@@ -69,7 +70,7 @@ public:
   void sendTelemetry(const TelemetryData &d) override {
     // Pack header + payload into a stack-local buffer and write in one call
     // to minimise the number of USB transactions.
-    uint8_t buf[31];
+    uint8_t buf[33];
     buf[0] = 0xAA;
     buf[1] = 0xBB;
 
@@ -82,6 +83,7 @@ public:
     int16_t acc = (int16_t)d.p_acc;
     int16_t dist = (int16_t)d.p_dist;
     uint16_t sg = (uint16_t)d.sg_result;
+    int16_t mvel = (int16_t)d.mvel;
 
     memcpy(&buf[2], &ts, 4);
     memcpy(&buf[6], &pos, 4);
@@ -94,12 +96,13 @@ public:
     memcpy(&buf[26], &sg, 2);
     buf[28] = d.cs_actual;
     buf[29] = d.pwm_scale;
+    memcpy(&buf[30], &mvel, 2);
 
-    // Simple XOR checksum over the payload bytes (offsets 2–29)
+    // Simple XOR checksum over the payload bytes (offsets 2–31)
     uint8_t chk = 0;
-    for (int i = 2; i < 30; i++)
+    for (int i = 2; i < 32; i++)
       chk ^= buf[i];
-    buf[30] = chk;
+    buf[32] = chk;
 
     UsbWriteGuard guard;
     if (guard) USBSerial.write(buf, sizeof(buf));

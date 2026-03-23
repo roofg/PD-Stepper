@@ -16,9 +16,9 @@ from datetime import datetime
 
 TELE_HEADER      = (0xAA, 0xBB)
 STOP_HEADER      = (0xAA, 0xCC)
-TELE_PACKET_LEN  = 29
+TELE_PACKET_LEN  = 33
 STOP_PACKET_LEN  = 38
-TELE_FMT         = "<IiiihhhhHB"
+TELE_FMT         = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT         = "<i32s"
 
 stop_event = threading.Event()

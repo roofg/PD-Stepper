@@ -18,9 +18,9 @@ import serial
 
 TELE_HEADER     = (0xAA, 0xBB)
 STOP_HEADER     = (0xAA, 0xCC)
-TELE_PACKET_LEN = 29
+TELE_PACKET_LEN = 33
 STOP_PACKET_LEN = 38
-TELE_FMT        = "<IiiihhhhHB"
+TELE_FMT        = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT        = "<i32s"
 
 # The firmware enforces a 50 ms settle delay before it can send any STOP packet.
@@ -72,11 +72,11 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
                     break
                 pkt = buf[:TELE_PACKET_LEN]
                 chk = 0
-                for b in pkt[2:28]:
+                for b in pkt[2:32]:
                     chk ^= b
-                if chk == pkt[28]:
-                    fields = struct.unpack(TELE_FMT, bytes(pkt[2:]))
-                    ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _ = fields
+                if chk == pkt[32]:
+                    fields = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
+                    ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _cs, _pwm, _mvel = fields
                     t_sec = ts / 1000.0
                     print(f"  {t_sec:6.2f}  {target:>8}  {meas:>9}  {lag:>6}  {vel:>7}")
                 buf = buf[TELE_PACKET_LEN:]

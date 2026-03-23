@@ -2,7 +2,7 @@
  * Binary protocol parser for PD-Stepper USB CDC telemetry.
  *
  * Wire format (little-endian):
- *   UPDATE   0xAA 0xBB  31 bytes total  (cs_actual + pwm_scale added at offsets 28-29)
+ *   UPDATE   0xAA 0xBB  33 bytes total  (mvel added at offset 30; checksum at 32)
  *   STOP     0xAA 0xCC  38 bytes total
  *   SETTINGS 0xAA 0xEE  19 bytes total
  *   STATUS   0xAA 0xDD  20 bytes total
@@ -14,7 +14,7 @@ const STOP_T     = 0xcc;
 const SETTINGS_T = 0xee;
 const STATUS_T   = 0xdd;
 
-const UPDATE_LEN   = 31;
+const UPDATE_LEN   = 33;
 const STOP_LEN     = 38;
 const SETTINGS_LEN = 19;
 const STATUS_LEN   = 20;
@@ -32,6 +32,7 @@ export interface TelemetryUpdate {
   stallguard: number;  // uint16, TMC2209 StallGuard result
   csActual:  number;   // uint8,  TMC current scale 0–31
   pwmScale:  number;   // uint8,  TMC PWM duty 0–255
+  mvel:      number;   // int16,  measured encoder velocity (steps/s)
 }
 
 export interface StopPacket {
@@ -149,12 +150,12 @@ export class PacketParser {
       if (type === UPDATE_T) {
         if (this.buf.length < UPDATE_LEN) return;
 
-        // Validate XOR checksum over bytes 2..29 BEFORE consuming.
+        // Validate XOR checksum over bytes 2..31 BEFORE consuming.
         // Splicing first would irrecoverably lose any valid 0xAA byte
         // embedded in the discarded window (common in int32 position fields).
         let chk = 0;
-        for (let i = 2; i < 30; i++) chk ^= this.buf[i];
-        if (chk !== this.buf[30]) {
+        for (let i = 2; i < 32; i++) chk ^= this.buf[i];
+        if (chk !== this.buf[32]) {
           this._stats.checksumErrors++;
           if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
           this.buf.shift(); // discard false 0xAA sync, rescan from next byte
@@ -166,7 +167,7 @@ export class PacketParser {
         if (this._lastUpdateWallMs > 0) {
           const gap = now - this._lastUpdateWallMs;
           if (gap > this._stats.maxGapMs) this._stats.maxGapMs = gap;
-          if (gap > 150) this._stats.gapsOver150ms++;
+          if (gap > 25) this._stats.gapsOver150ms++;  // threshold: 2.5× 10ms interval
         }
         this._lastUpdateWallMs = now;
         this._stats.updateCount++;
@@ -186,6 +187,7 @@ export class PacketParser {
           stallguard: dv.getUint16(26, true),
           csActual:   dv.getUint8(28),
           pwmScale:   dv.getUint8(29),
+          mvel:       dv.getInt16(30, true),
         });
 
       } else if (type === STOP_T) {

@@ -734,8 +734,8 @@ static void ControlTask(void *) {
             stepgen::halt();
         }
 
-        // --- Telemetry at 10 Hz — enqueue snapshot for TelemetryTask ---
-        if (millis() - lastTeleMs >= 100) {
+        // --- Telemetry at 100 Hz — enqueue snapshot for TelemetryTask ---
+        if (millis() - lastTeleMs >= 10) {
             float dt_s    = (millis() - lastTeleMs) / 1000.0f;
             lastTeleMs    = millis();
             float mVel    = (float)(encCounts - lastTeleEnc)
@@ -756,6 +756,7 @@ static void ControlTask(void *) {
                 d.sg_result = g_sg_result;
                 d.cs_actual = g_cs_actual_cache;  // Option 3: TMC cache (atomic uint8 read)
                 d.pwm_scale = g_pwm_scale_cache;  // Option 3: TMC cache (atomic uint8 read)
+                d.mvel      = (int16_t)mVel;
                 // Non-blocking: drop packet if queue full rather than stalling.
                 xQueueSend(s_teleQueue, &d, 0);
             }
@@ -797,7 +798,7 @@ void setMicrosteps(int ms) {
 
 void init() {
     s_motionQueue = xQueueCreate(10, sizeof(MotionCommand));
-    s_teleQueue   = xQueueCreate(2,  sizeof(TelemetryData)); // 2 slots: 1 active + 1 slack
+    s_teleQueue   = xQueueCreate(4,  sizeof(TelemetryData)); // 4 slots: headroom at 100 Hz
 
     // Initialise step generator ISR (timer starts immediately but produces no
     // pulses until setVelocity() is called with a non-zero value).

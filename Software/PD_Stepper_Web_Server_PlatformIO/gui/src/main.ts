@@ -93,6 +93,21 @@ let stopsReceived = 0;
 let settingsReceived = false;
 let linkInterval: ReturnType<typeof setInterval> | null = null;
 
+// Chart rendering is decoupled from packet arrival via requestAnimationFrame.
+// Packets arrive at 100 Hz; the browser renders at ~60 Hz. Setting this flag
+// on each packet and consuming it in the rAF loop means chart.update() is
+// called at most once per animation frame, keeping the main thread responsive.
+let _chartDirty = false;
+
+function _rafLoop(): void {
+  if (_chartDirty) {
+    chart.update(store);
+    _chartDirty = false;
+  }
+  requestAnimationFrame(_rafLoop);
+}
+requestAnimationFrame(_rafLoop);
+
 // Keep kp/kd together since set_pd requires both
 let currentKp = 3.0;
 let currentKd = 0.1;
@@ -359,7 +374,7 @@ conn.onPacket = (packet: Packet): void => {
     teleLag.textContent     = packet.lag.toString();
     store.push(packet);
     teleSkipped.textContent = store.moveStats.skippedSteps.toString();
-    chart.update(store);
+    _chartDirty = true;  // chart renders on next rAF tick (~60 Hz), not on every packet
   } else {
     stopsReceived++;
     setMotionStatus(false);

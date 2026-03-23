@@ -7,9 +7,9 @@ import math
 
 TELE_HEADER      = (0xAA, 0xBB)
 STOP_HEADER      = (0xAA, 0xCC)
-TELE_PACKET_LEN  = 29
+TELE_PACKET_LEN  = 33
 STOP_PACKET_LEN  = 38
-TELE_FMT         = "<IiiihhhhHB"
+TELE_FMT         = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT         = "<i32s"
 
 def run_test_move(ser: serial.Serial, kp: float, ki: float, accel: float):
@@ -48,10 +48,10 @@ def run_test_move(ser: serial.Serial, kp: float, ki: float, accel: float):
                     pkt = buf[:TELE_PACKET_LEN]
                     
                     chk = 0
-                    for b in pkt[2:28]: chk ^= b
-                    if chk == pkt[28]:
-                        fields = struct.unpack(TELE_FMT, bytes(pkt[2:]))
-                        ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _ = fields
+                    for b in pkt[2:32]: chk ^= b
+                    if chk == pkt[32]:
+                        fields = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
+                        ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _cs, _pwm, _mvel = fields
                         
                         error = abs(target - meas)
                         total_error += error

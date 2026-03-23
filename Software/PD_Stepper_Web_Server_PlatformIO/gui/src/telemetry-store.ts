@@ -8,7 +8,7 @@
 
 import type { TelemetryUpdate } from './protocol';
 
-const MAX_POINTS = 2000; // ~3 min at 10 Hz
+const MAX_POINTS = 12000; // ~2 min at 100 Hz
 const LAG_WINDOW = 20;   // samples for rolling jitter stdev
 
 /** Per-move derived metrics, computed client-side from the UPDATE stream. */

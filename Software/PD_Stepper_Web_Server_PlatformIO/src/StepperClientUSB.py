@@ -25,9 +25,9 @@ import time
 
 TELE_HEADER      = (0xAA, 0xBB)
 STOP_HEADER      = (0xAA, 0xCC)
-TELE_PACKET_LEN  = 29
+TELE_PACKET_LEN  = 33
 STOP_PACKET_LEN  = 38
-TELE_FMT         = "<IiiihhhhHB"  # uint32, int32×3, int16×4, uint16, uint8
+TELE_FMT         = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT         = "<i32s"       # int32, char[32]
 
 stop_event = threading.Event()
@@ -54,10 +54,10 @@ def serial_reader(ser: serial.Serial):
                 
                 # XOR checksum validation
                 chk = 0
-                for b in pkt[2:28]: chk ^= b
-                if chk == pkt[28]:
-                    fields = struct.unpack(TELE_FMT, bytes(pkt[2:]))
-                    ts, pos, meas, target, lag, vel, p_acc, p_dist, sg_result, _ = fields
+                for b in pkt[2:32]: chk ^= b
+                if chk == pkt[32]:
+                    fields = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
+                    ts, pos, meas, target, lag, vel, p_acc, p_dist, sg_result, _cs, _pwm, _mvel = fields
                     # (Optional: print if needed, but keeping it light for performance)
                     print(f"[{ts/1e6:8.3f}s] P:{pos:7} M:{meas:7} T:{target:7} L:{lag:4} V:{vel:5} A:{p_acc:5} Rem:{p_dist:6} SG:{sg_result:4}")
                 

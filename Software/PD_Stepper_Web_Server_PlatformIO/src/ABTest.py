@@ -6,7 +6,7 @@ import struct
 
 TELE_HEADER      = (0xAA, 0xBB)
 STOP_HEADER      = (0xAA, 0xCC)
-TELE_PACKET_LEN  = 29
+TELE_PACKET_LEN  = 33
 STOP_PACKET_LEN  = 38
 STOP_FMT         = "<i32s"
 

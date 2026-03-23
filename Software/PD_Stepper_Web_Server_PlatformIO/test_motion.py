@@ -29,9 +29,9 @@ import serial
 
 TELE_HEADER     = (0xAA, 0xBB)
 STOP_HEADER     = (0xAA, 0xCC)
-TELE_PACKET_LEN = 29             # 2 header + 26 payload + 1 XOR checksum
+TELE_PACKET_LEN = 33             # 2 header + 30 payload + 1 XOR checksum
 STOP_PACKET_LEN = 38             # 2 header + 4 final_pos + 32 reason
-TELE_FMT        = "<IiiihhhhHB"  # UPDATE payload layout
+TELE_FMT        = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT        = "<i32s"        # STOP payload layout
 
 # ---------------------------------------------------------------------------
@@ -213,11 +213,11 @@ class StepperTestClient:
                         break
                     pkt = buf[:TELE_PACKET_LEN]
                     chk = 0
-                    for b in pkt[2:28]:
+                    for b in pkt[2:32]:
                         chk ^= b
-                    if chk == pkt[28]:
-                        vals = struct.unpack(TELE_FMT, bytes(pkt[2:]))
-                        ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _ = vals
+                    if chk == pkt[32]:
+                        vals = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
+                        ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _cs, _pwm, _mvel = vals
                         result.telemetry.append(TelemetryPacket(
                             ts=ts, pos=pos, meas=meas, target=target,
                             lag=lag, vel=vel, p_acc=p_acc, p_dist=p_dist, sg=sg,
