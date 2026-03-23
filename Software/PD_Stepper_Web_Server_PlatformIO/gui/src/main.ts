@@ -65,6 +65,7 @@ const setHoldDelay    = document.getElementById('set-hold-delay')     as HTMLInp
 const setStall        = document.getElementById('set-stall')          as HTMLInputElement;
 const setStandstill   = document.getElementById('set-standstill')     as HTMLSelectElement;
 const setStealthchop  = document.getElementById('set-stealthchop')    as HTMLInputElement;
+const setSpreadEnable = document.getElementById('set-spread-enable')  as HTMLInputElement;
 const setSpreadSpeed  = document.getElementById('set-spread-speed')   as HTMLInputElement;
 const setCoolstep     = document.getElementById('set-coolstep')       as HTMLInputElement;
 const btnApplyTmc     = document.getElementById('btn-apply-tmc')      as HTMLButtonElement;
@@ -75,7 +76,9 @@ const dsPg          = document.getElementById('ds-pg')          as HTMLSpanEleme
 const dsCs          = document.getElementById('ds-cs')          as HTMLSpanElement;
 const dsCsBar       = document.getElementById('ds-cs-bar')      as HTMLDivElement;
 const dsPwm         = document.getElementById('ds-pwm')         as HTMLSpanElement;
+const dsPwmBar      = document.getElementById('ds-pwm-bar')     as HTMLDivElement;
 const dsSg          = document.getElementById('ds-sg')          as HTMLSpanElement;
+const dsSgBar       = document.getElementById('ds-sg-bar')      as HTMLDivElement;
 const dsStealth     = document.getElementById('ds-stealth')     as HTMLSpanElement;
 const dsStandstill2 = document.getElementById('ds-standstill')  as HTMLSpanElement;
 const dsBoot        = document.getElementById('ds-boot')        as HTMLSpanElement;
@@ -146,10 +149,16 @@ function setSettingsEnabled(on: boolean): void {
   setStall.disabled       = !on;
   setStandstill.disabled  = !on;
   setStealthchop.disabled = !on;
-  setSpreadSpeed.disabled = !on;
+  setSpreadEnable.disabled = !on;
+  setSpreadSpeed.disabled = !on || !setSpreadEnable.checked;
   setCoolstep.disabled    = !on;
   btnApplyTmc.disabled    = !on;
 }
+
+// Toggle enables/disables the SpreadCycle threshold speed input
+setSpreadEnable.addEventListener('change', () => {
+  setSpreadSpeed.disabled = !setSpreadEnable.checked;
+});
 
 function setControlsEnabled(on: boolean): void {
   setMotionEnabled(on);
@@ -362,7 +371,7 @@ btnApplyTmc.addEventListener('click', () => {
   sendCmd({ cmd: 'set_stall_threshold',value: parseInt(setStall.value, 10) });
   sendCmd({ cmd: 'set_standstill_mode',value: setStandstill.value });
   sendCmd({ cmd: 'set_stealthchop',    value: setStealthchop.checked ? 1 : 0 });
-  sendCmd({ cmd: 'set_spread_cycle_speed', value: parseInt(setSpreadSpeed.value, 10) });
+  sendCmd({ cmd: 'set_spread_cycle_speed', value: setSpreadEnable.checked ? parseInt(setSpreadSpeed.value, 10) : 0 });
   sendCmd({ cmd: 'set_coolstep',       value: setCoolstep.checked ? 1 : 0 });
 });
 
@@ -383,7 +392,9 @@ conn.onSettings = (pkt: SettingsPacket): void => {
   setStall.value       = pkt.stallThreshold.toString();
   setStandstill.value  = standstillModes[pkt.standstillMode] ?? 'NORMAL';
   setStealthchop.checked = pkt.stealthchop;
-  setSpreadSpeed.value   = pkt.spreadCycleSpeed.toString();
+  setSpreadEnable.checked = pkt.spreadCycleSpeed > 0;
+  setSpreadSpeed.value   = pkt.spreadCycleSpeed > 0 ? pkt.spreadCycleSpeed.toString() : '5000';
+  setSpreadSpeed.disabled = !pkt.spreadCycleSpeed;
   setCoolstep.checked    = pkt.coolstep;
 
   currentKp = pkt.kp;
@@ -408,7 +419,9 @@ conn.onStatus = (pkt: StatusPacket): void => {
   dsCs.textContent       = `${csPct}%`;
   dsCsBar.style.width    = `${csPct}%`;
   dsPwm.textContent      = `${Math.round((pkt.pwmScale / 255) * 100)}%`;
+  dsPwmBar.style.width   = `${Math.round((pkt.pwmScale / 255) * 100)}%`;
   dsSg.textContent       = `${Math.round((pkt.sgResult / 1023) * 100)}%`;
+  dsSgBar.style.width    = `${Math.round((pkt.sgResult / 1023) * 100)}%`;
   dsStealth.textContent  = pkt.stealthchopActive ? 'StealthChop' : 'SpreadCycle';
   dsStealth.className    = `metric-value ${pkt.stealthchopActive ? 'ok' : ''}`;
   dsStandstill2.textContent = pkt.standstill ? 'YES' : 'no';

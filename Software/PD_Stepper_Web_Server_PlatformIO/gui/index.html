@@ -121,10 +121,19 @@
                   </label>
                 </label>
               </div>
-              <!-- SpreadCycle Speed Threshold -->
+              <!-- SpreadCycle Threshold Speed -->
+              <div class="settings-row toggle-row">
+                <label class="settings-label toggle-label">
+                  SpreadCycle
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="set-spread-enable" disabled />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </label>
+              </div>
               <div class="settings-row">
-                <label class="settings-label">SpreadCycle Speed (steps/s)
-                  <input type="number" id="set-spread-speed" value="0" step="100" min="0" max="65535" disabled />
+                <label class="settings-label">Threshold Speed (steps/s)
+                  <input type="number" id="set-spread-speed" value="0" step="100" min="1" max="65535" disabled />
                 </label>
               </div>
               <!-- CoolStep -->
@@ -321,10 +330,12 @@
               <div class="metric">
                 <span class="metric-label">PWM Duty Cycle</span>
                 <span class="metric-value" id="ds-pwm">—</span>
+                <div class="cs-bar"><div class="cs-fill" id="ds-pwm-bar" style="width:0%"></div></div>
               </div>
               <div class="metric">
                 <span class="metric-label">StallGuard</span>
                 <span class="metric-value" id="ds-sg">—</span>
+                <div class="cs-bar"><div class="cs-fill" id="ds-sg-bar" style="width:0%"></div></div>
               </div>
               <div class="metric">
                 <span class="metric-label">Mode</span>
