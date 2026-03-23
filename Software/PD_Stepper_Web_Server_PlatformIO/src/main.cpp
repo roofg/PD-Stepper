@@ -350,7 +350,12 @@ void processSerialCommands() {
               Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
             } else {
               setSpreadCycleSpeed = doc["value"] | 0;
-              uint32_t tpwm = setSpreadCycleSpeed > 0 ? 12000000UL / (uint32_t)setSpreadCycleSpeed : 0;
+              // TSTEP measures 1/256-microstep period, not input-step period.
+              // Scale: TPWMTHRS = fCLK * microsteps / (256 * velocity)
+              uint32_t tpwm = 0;
+              if (setSpreadCycleSpeed > 0) {
+                tpwm = (uint32_t)((12000000ULL * (uint32_t)setMicrosteps) / (256ULL * (uint32_t)setSpreadCycleSpeed));
+              }
               tmc::setStealthChopThreshold(tpwm);
               Serial1.printf("Set SpreadCycle speed: %d steps/s (TPWMTHRS=%lu)\n", setSpreadCycleSpeed, (unsigned long)tpwm);
             }
@@ -515,7 +520,12 @@ void configureSettings() {
   else                 tmc::disableCoolStep();
 
   // Apply SpreadCycle speed threshold (TPWMTHRS register)
-  uint32_t tpwm = setSpreadCycleSpeed > 0 ? 12000000UL / (uint32_t)setSpreadCycleSpeed : 0;
+  // TSTEP measures 1/256-microstep period, not input-step period.
+  // Scale: TPWMTHRS = fCLK * microsteps / (256 * velocity)
+  uint32_t tpwm = 0;
+  if (setSpreadCycleSpeed > 0) {
+    tpwm = (uint32_t)((12000000ULL * (uint32_t)setMicrosteps) / (256ULL * (uint32_t)setSpreadCycleSpeed));
+  }
   tmc::setStealthChopThreshold(tpwm);
 }
 
