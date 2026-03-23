@@ -94,6 +94,7 @@ const fbHoldSettled = document.getElementById('fb-hold-settled') as HTMLSpanElem
 
 let movesSent     = 0;
 let stopsReceived = 0;
+let settingsReceived = false;
 let linkInterval: ReturnType<typeof setInterval> | null = null;
 
 // Keep kp/kd together since set_pd requires both
@@ -204,6 +205,7 @@ conn.onConnectionChange = (connected: boolean): void => {
   btnConnect.textContent = connected ? 'Disconnect' : 'Connect';
   btnConnect.classList.toggle('connected', connected);
   if (!connected) {
+    settingsReceived = false;
     setControlsEnabled(false);
     setMotionStatus(false);
     if (linkInterval) { clearInterval(linkInterval); linkInterval = null; }
@@ -289,6 +291,7 @@ const standstillModes = ['NORMAL', 'FREEWHEELING', 'BRAKING', 'STRONG_BRAKING'];
 
 conn.onSettings = (pkt: SettingsPacket): void => {
   syncIndicator.classList.add('hidden');
+  settingsReceived = true;
   setSettingsEnabled(true);   // unlock now that values are known
 
   setVoltage.value     = pkt.voltage.toString();
@@ -344,6 +347,11 @@ conn.onStatus = (pkt: StatusPacket): void => {
 
   setBadge(fbHoldActive,  pkt.holdActive,  'ok');
   setBadge(fbHoldSettled, pkt.holdSettled, 'ok');
+
+  // Gate TMC settings apply button during motion — firmware rejects those commands anyway
+  if (settingsReceived) {
+    btnApplyTmc.disabled = pkt.isRunning;
+  }
 };
 
 // ── Telemetry ────────────────────────────────────────────────────────────────

@@ -31,6 +31,8 @@ export class TelemetryStore {
   private _pos:        number[] = [];
   private _dist:       number[] = [];
   private _stallguard: number[] = [];
+  private _csActual:   number[] = [];
+  private _pwmScale:   number[] = [];
 
   private _startTs: number | null = null;
   private _pos0 = 0;   // pos at first packet — baseline for relative divergence
@@ -74,7 +76,8 @@ export class TelemetryStore {
     this._lagWindow = [];
     this._t.length = this._meas.length = this._target.length =
     this._lag.length = this._vel.length = this._accel.length =
-    this._pos.length = this._dist.length = this._stallguard.length = 0;
+    this._pos.length = this._dist.length = this._stallguard.length =
+    this._csActual.length = this._pwmScale.length = 0;
   }
 
   push(pkt: TelemetryUpdate): void {
@@ -102,6 +105,8 @@ export class TelemetryStore {
     this._pos.push(pkt.pos);
     this._dist.push(pkt.dist);
     this._stallguard.push(pkt.stallguard);
+    this._csActual.push(pkt.csActual);
+    this._pwmScale.push(pkt.pwmScale);
 
     // Trim oldest point once cap is exceeded
     if (this._t.length > MAX_POINTS) {
@@ -114,6 +119,8 @@ export class TelemetryStore {
       this._pos.shift();
       this._dist.shift();
       this._stallguard.shift();
+      this._csActual.shift();
+      this._pwmScale.shift();
     }
   }
 
@@ -134,6 +141,8 @@ export class TelemetryStore {
       this._pos,        // series 6
       this._dist,       // series 7
       this._stallguard, // series 8
+      this._csActual,   // series 9
+      this._pwmScale,   // series 10
     ];
   }
 }

@@ -2,7 +2,7 @@
  * Binary protocol parser for PD-Stepper USB CDC telemetry.
  *
  * Wire format (little-endian):
- *   UPDATE   0xAA 0xBB  29 bytes total
+ *   UPDATE   0xAA 0xBB  31 bytes total  (cs_actual + pwm_scale added at offsets 28-29)
  *   STOP     0xAA 0xCC  38 bytes total
  *   SETTINGS 0xAA 0xEE  19 bytes total
  *   STATUS   0xAA 0xDD  20 bytes total
@@ -14,7 +14,7 @@ const STOP_T     = 0xcc;
 const SETTINGS_T = 0xee;
 const STATUS_T   = 0xdd;
 
-const UPDATE_LEN   = 29;
+const UPDATE_LEN   = 31;
 const STOP_LEN     = 38;
 const SETTINGS_LEN = 19;
 const STATUS_LEN   = 20;
@@ -30,6 +30,8 @@ export interface TelemetryUpdate {
   accel:     number;   // int16, steps/s²
   dist:      number;   // int16, remaining steps
   stallguard: number;  // uint16, TMC2209 StallGuard result
+  csActual:  number;   // uint8,  TMC current scale 0–31
+  pwmScale:  number;   // uint8,  TMC PWM duty 0–255
 }
 
 export interface StopPacket {
@@ -147,12 +149,12 @@ export class PacketParser {
       if (type === UPDATE_T) {
         if (this.buf.length < UPDATE_LEN) return;
 
-        // Validate XOR checksum over bytes 2..27 BEFORE consuming.
+        // Validate XOR checksum over bytes 2..29 BEFORE consuming.
         // Splicing first would irrecoverably lose any valid 0xAA byte
         // embedded in the discarded window (common in int32 position fields).
         let chk = 0;
-        for (let i = 2; i < 28; i++) chk ^= this.buf[i];
-        if (chk !== this.buf[28]) {
+        for (let i = 2; i < 30; i++) chk ^= this.buf[i];
+        if (chk !== this.buf[30]) {
           this._stats.checksumErrors++;
           if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
           this.buf.shift(); // discard false 0xAA sync, rescan from next byte
@@ -182,6 +184,8 @@ export class PacketParser {
           accel:      dv.getInt16(22, true),
           dist:       dv.getInt16(24, true),
           stallguard: dv.getUint16(26, true),
+          csActual:   dv.getUint8(28),
+          pwmScale:   dv.getUint8(29),
         });
 
       } else if (type === STOP_T) {

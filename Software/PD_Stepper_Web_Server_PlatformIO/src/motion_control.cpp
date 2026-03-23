@@ -41,6 +41,10 @@ static volatile bool    g_fault_lag      = false;  // set: control; cleared: pla
 static volatile bool    g_fault_estop    = false;  // set: control; cleared: planner on move start
 static volatile bool    g_fault_brownout = false;  // set: planner; cleared: planner on move start
 static volatile uint16_t g_sg_result     = 0;      // written: planner (UART); read: control (tele)
+// TMC telemetry cache — written by DiagnosticsTask (Core 0, ~1–10 Hz); read by ControlTask (Core 1).
+// uint8_t reads/writes are single-instruction atomic on ESP32 LX7.
+static volatile uint8_t  g_cs_actual_cache = 0;
+static volatile uint8_t  g_pwm_scale_cache = 0;
 // Microsteps per full step — written by setMicrosteps() from main task; read
 // by both planner and control tasks. int32_t ensures atomic 32-bit read on LX7.
 static volatile int32_t g_uSteps_setting = 32;
@@ -269,22 +273,29 @@ static void planChain(const MotionCommand* cmds, int n,
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostics Task — Core 0, priority 2, runs at 1 Hz
+// Diagnostics Task — Core 0, priority 2
 //
+// Runs at 10 Hz during motion, 1 Hz at rest (Option 4).
 // Reads TMC UART registers (safe on Core 0 via TmcLock), assembles 0xAA 0xDD
-// STATUS packets, and writes them to USBSerial when the motor is not running.
-// STATUS packets are suppressed during moves to avoid write-interleaving with
-// TelemetryTask's UPDATE/STOP packets.
+// STATUS packets, and writes them on every cycle (Option 2 — no !running gate;
+// UsbWriteGuard serialises all USBSerial writes, so concurrent UPDATE/STATUS
+// writes interleave safely at the packet level).
 // ---------------------------------------------------------------------------
 static void DiagnosticsTask(void *) {
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // Option 4: 10 Hz during motion, 1 Hz at rest.
+        vTaskDelay(pdMS_TO_TICKS(s_running ? 100 : 1000));
 
         // TMC UART reads — Core 0, TmcLock-protected inside each call
         tmc::DriverStatus ds = tmc::getDriverStatus();
         uint8_t  pwmScale    = (uint8_t)tmc::getPwmScaleSum();
         uint32_t tstep       = tmc::getInterstepDuration();
         uint16_t sgResult    = (uint16_t)tmc::getStallGuardResult();
+
+        // Option 3: update inter-task cache for ControlTask telemetry assembly.
+        // uint8_t stores are single-instruction atomic on ESP32 LX7.
+        g_cs_actual_cache = (uint8_t)ds.current_scaling;
+        g_pwm_scale_cache = pwmScale;
 
         // Cross-core reads — written by loop() on Core 1 at 1 Hz (volatile)
         float vbus = VBusVoltage;
@@ -311,10 +322,9 @@ static void DiagnosticsTask(void *) {
             ds.over_temperature_shutdown ? " SHUTDOWN" : "",
             pwmScale, (unsigned long)tstep, sgResult, freeHeapKB);
 
-        // Send STATUS binary packet only when motor is not running.
-        // TelemetryTask writes UPDATE packets during moves; emitting STATUS
-        // concurrently from this task would interleave bytes on USBSerial.
-        if (!running) {
+        // Option 2: Send STATUS on every cycle regardless of motion state.
+        // UsbWriteGuard ensures no byte-level interleaving with TelemetryTask.
+        {
             uint8_t buf[20];
             buf[0] = 0xAA; buf[1] = 0xDD;
 
@@ -328,7 +338,7 @@ static void DiagnosticsTask(void *) {
             if (lagFault)                          fa |= (1 << 3);
             if (brownout)                          fa |= (1 << 5);
             if (holdActive)                        fa |= (1 << 6);
-            // bit 7 (isRunning) is always 0 here since we only send when !running
+            if (running)                           fa |= (1 << 7); // isRunning bit (Option 2)
             buf[4] = fa;
 
             uint8_t fb = 0;
@@ -742,6 +752,8 @@ static void ControlTask(void *) {
                 d.p_acc     = (int)ref.acc;
                 d.p_dist    = (int)(g_target_pos - measPos);
                 d.sg_result = g_sg_result;
+                d.cs_actual = g_cs_actual_cache;  // Option 3: TMC cache (atomic uint8 read)
+                d.pwm_scale = g_pwm_scale_cache;  // Option 3: TMC cache (atomic uint8 read)
                 // Non-blocking: drop packet if queue full rather than stalling.
                 xQueueSend(s_teleQueue, &d, 0);
             }

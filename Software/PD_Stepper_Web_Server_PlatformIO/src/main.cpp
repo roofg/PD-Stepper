@@ -266,53 +266,89 @@ void processSerialCommands() {
             Serial1.printf("Set PD (legacy set_pid) - Kp: %.4f, Kd: %.4f\n", kp, kd);
 
           } else if (strcmp(cmd, "set_voltage") == 0) {
-            setVoltage = doc["value"] | 20;
-            configureSettings();
-            motion::setConfiguredVoltage((float)setVoltage);
-            Serial1.printf("Set voltage: %d V\n", setVoltage);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setVoltage = doc["value"] | 20;
+              configureSettings();
+              motion::setConfiguredVoltage((float)setVoltage);
+              Serial1.printf("Set voltage: %d V\n", setVoltage);
+            }
 
           } else if (strcmp(cmd, "set_current") == 0) {
-            setCurrent = doc["value"] | 50;
-            tmc::setRunCurrent(setCurrent);
-            Serial1.printf("Set current: %d%%\n", setCurrent);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setCurrent = doc["value"] | 50;
+              tmc::setRunCurrent(setCurrent);
+              Serial1.printf("Set current: %d%%\n", setCurrent);
+            }
 
           } else if (strcmp(cmd, "set_hold_current") == 0) {
-            setHoldCurrent = doc["value"] | 25;
-            tmc::setHoldCurrent(setHoldCurrent);
-            Serial1.printf("Set hold current: %d%%\n", setHoldCurrent);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setHoldCurrent = doc["value"] | 25;
+              tmc::setHoldCurrent(setHoldCurrent);
+              Serial1.printf("Set hold current: %d%%\n", setHoldCurrent);
+            }
 
           } else if (strcmp(cmd, "set_hold_delay") == 0) {
-            setHoldDelay = doc["value"] | 8;
-            tmc::setHoldDelay(setHoldDelay);
-            Serial1.printf("Set hold delay: %d\n", setHoldDelay);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setHoldDelay = doc["value"] | 8;
+              tmc::setHoldDelay(setHoldDelay);
+              Serial1.printf("Set hold delay: %d\n", setHoldDelay);
+            }
 
           } else if (strcmp(cmd, "set_microsteps") == 0) {
-            setMicrosteps = doc["value"] | 32;
-            tmc::setMicrostepsPerStep(setMicrosteps);
-            motion::setMicrosteps(setMicrosteps);
-            Serial1.printf("Set microsteps: %d\n", setMicrosteps);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setMicrosteps = doc["value"] | 32;
+              tmc::setMicrostepsPerStep(setMicrosteps);
+              motion::setMicrosteps(setMicrosteps);
+              Serial1.printf("Set microsteps: %d\n", setMicrosteps);
+            }
 
           } else if (strcmp(cmd, "set_stall_threshold") == 0) {
-            setStall = doc["value"] | 10;
-            tmc::setStallGuardThreshold(setStall);
-            Serial1.printf("Set stall threshold: %d\n", setStall);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              setStall = doc["value"] | 10;
+              tmc::setStallGuardThreshold(setStall);
+              Serial1.printf("Set stall threshold: %d\n", setStall);
+            }
 
           } else if (strcmp(cmd, "set_standstill_mode") == 0) {
-            const char *mode = doc["value"] | "NORMAL";
-            strncpy(standstillMode, mode, sizeof(standstillMode) - 1);
-            standstillMode[sizeof(standstillMode) - 1] = '\0';
-            configureSettings();
-            Serial1.printf("Set standstill mode: %s\n", standstillMode);
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              const char *mode = doc["value"] | "NORMAL";
+              strncpy(standstillMode, mode, sizeof(standstillMode) - 1);
+              standstillMode[sizeof(standstillMode) - 1] = '\0';
+              configureSettings();
+              Serial1.printf("Set standstill mode: %s\n", standstillMode);
+            }
 
           } else if (strcmp(cmd, "set_stealthchop") == 0) {
-            stealthchopEnabled = (int)(doc["value"] | 1) != 0;
-            configureSettings();
-            Serial1.printf("Set StealthChop: %s\n", stealthchopEnabled ? "ON" : "OFF");
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              stealthchopEnabled = (int)(doc["value"] | 1) != 0;
+              configureSettings();
+              Serial1.printf("Set StealthChop: %s\n", stealthchopEnabled ? "ON" : "OFF");
+            }
 
           } else if (strcmp(cmd, "set_coolstep") == 0) {
-            coolstepEnabled = (int)(doc["value"] | 1) != 0;
-            configureSettings();
-            Serial1.printf("Set CoolStep: %s\n", coolstepEnabled ? "ON" : "OFF");
+            if (motion::isRunning()) {
+              Serial1.printf("ERR: '%s' rejected — motion in progress\n", cmd);
+            } else {
+              coolstepEnabled = (int)(doc["value"] | 1) != 0;
+              configureSettings();
+              Serial1.printf("Set CoolStep: %s\n", coolstepEnabled ? "ON" : "OFF");
+            }
 
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();

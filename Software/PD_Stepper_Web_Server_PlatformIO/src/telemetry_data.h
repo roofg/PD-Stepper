@@ -17,6 +17,8 @@ struct TelemetryData {
   int p_acc;
   int p_dist;
   uint16_t sg_result;
+  uint8_t  cs_actual;  // TMC CS_ACTUAL (0–31), cached by DiagnosticsTask
+  uint8_t  pwm_scale;  // TMC PWM_SCALE (0–255), cached by DiagnosticsTask
 };
 
 #endif

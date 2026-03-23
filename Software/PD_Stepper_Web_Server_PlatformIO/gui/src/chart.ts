@@ -30,6 +30,8 @@ const SERIES_DEFS: SeriesDef[] = [
   { label: 'Pos (pulse)', stroke: '#6b7280', scale: 'pos', show: false  },
   { label: 'Dist Left',   stroke: '#ec4899', scale: 'pos', show: false  },
   { label: 'StallGuard',  stroke: '#ef4444', scale: 'err', show: false  },
+  { label: 'CS Actual',   stroke: '#06b6d4', scale: 'err', show: false  },
+  { label: 'PWM Scale',   stroke: '#d946ef', scale: 'err', show: false  },
 ];
 
 const GRID_STROKE  = '#2a2a2a';
