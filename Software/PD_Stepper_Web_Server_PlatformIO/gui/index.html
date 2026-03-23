@@ -267,6 +267,10 @@
             <!-- Hold accuracy — updates live during hold -->
             <div id="hold-accuracy">
               <h3 class="hold-accuracy-heading">Hold Accuracy</h3>
+              <div class="fault-badges hold-state-badges">
+                <span class="fault-badge" id="fb-hold-active">Holding</span>
+                <span class="fault-badge" id="fb-hold-settled">Settled</span>
+              </div>
               <div class="dev-gauge" id="dev-gauge">
                 <div class="dev-gauge-zones">
                   <div class="dev-zone red"></div>
@@ -292,10 +296,6 @@
                   <span class="metric-label">Settle Time</span>
                   <span class="metric-value" id="hold-settle-time">—</span>
                 </div>
-              </div>
-              <div class="fault-badges hold-state-badges">
-                <span class="fault-badge" id="fb-hold-active">Hold Active</span>
-                <span class="fault-badge" id="fb-hold-settled">Settled</span>
               </div>
             </div>
           </section>
