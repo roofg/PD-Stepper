@@ -10,6 +10,10 @@ struct DriverStatus {
     bool    stealth_chop;            // true if StealthChop active
     bool    over_temperature_warning;
     bool    over_temperature_shutdown;
+    bool    short_to_ground_a;       // phase A short to GND
+    bool    short_to_ground_b;       // phase B short to GND
+    bool    open_load_a;             // phase A open load detected
+    bool    open_load_b;             // phase B open load detected
 };
 
 // Driver settings snapshot (from live config registers)

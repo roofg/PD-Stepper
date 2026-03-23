@@ -10,7 +10,11 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      "uplot": ["node_modules/uplot/dist/uPlot"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

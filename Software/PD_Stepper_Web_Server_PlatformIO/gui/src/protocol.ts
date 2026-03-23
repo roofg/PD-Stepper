@@ -2,16 +2,22 @@
  * Binary protocol parser for PD-Stepper USB CDC telemetry.
  *
  * Wire format (little-endian):
- *   UPDATE  0xAA 0xBB  29 bytes total
- *   STOP    0xAA 0xCC  38 bytes total
+ *   UPDATE   0xAA 0xBB  29 bytes total
+ *   STOP     0xAA 0xCC  38 bytes total
+ *   SETTINGS 0xAA 0xEE  19 bytes total
+ *   STATUS   0xAA 0xDD  20 bytes total
  */
 
-const SYNC     = 0xaa;
-const UPDATE_T = 0xbb;
-const STOP_T   = 0xcc;
+const SYNC       = 0xaa;
+const UPDATE_T   = 0xbb;
+const STOP_T     = 0xcc;
+const SETTINGS_T = 0xee;
+const STATUS_T   = 0xdd;
 
-const UPDATE_LEN = 29;
-const STOP_LEN   = 38;
+const UPDATE_LEN   = 29;
+const STOP_LEN     = 38;
+const SETTINGS_LEN = 19;
+const STATUS_LEN   = 20;
 
 export interface TelemetryUpdate {
   type: 'update';
@@ -34,16 +40,96 @@ export interface StopPacket {
 
 export type Packet = TelemetryUpdate | StopPacket;
 
+/** Settings snapshot from 0xAA 0xEE packet (19 bytes). */
+export interface SettingsPacket {
+  voltage:        number;  // V (5/9/12/15/20)
+  current:        number;  // run current %
+  holdCurrent:    number;  // hold current %
+  holdDelay:      number;  // hold delay %
+  microsteps:     number;  // 1–256
+  stallThreshold: number;  // 0–255
+  standstillMode: number;  // 0=NORMAL 1=FREEWHEELING 2=BRAKING 3=STRONG_BRAKING
+  stealthchop:    boolean;
+  coolstep:       boolean;
+  kp:             number;  // (kpInt / 1000)
+  kd:             number;  // (kdInt / 10000)
+  kv:             number;  // (kvInt / 100000)
+}
+
+/** Driver status snapshot from 0xAA 0xDD packet (20 bytes). */
+export interface StatusPacket {
+  vbusMv:           number;   // VBUS in mV
+  // flags_a (byte 4)
+  pgOk:             boolean;  // PG pin OK (active-low on CH224K)
+  otWarn:           boolean;
+  otShutdown:       boolean;
+  faultLag:         boolean;
+  faultBrownout:    boolean;
+  holdActive:       boolean;
+  isRunning:        boolean;
+  // flags_b (byte 5)
+  stealthchopActive: boolean;
+  standstill:       boolean;
+  shortGndA:        boolean;
+  shortGndB:        boolean;
+  openLoadA:        boolean;
+  openLoadB:        boolean;
+  holdSettled:      boolean;
+  // measurements
+  csActual:         number;   // 0–31
+  pwmScale:         number;   // 0–255
+  tstep:            number;   // inter-step duration (TMC units)
+  sgResult:         number;   // StallGuard 0–1023
+  freeHeapKb:       number;
+  ctrlHwm:          number;   // ControlTask stack high-water mark (bytes)
+  bootCount:        number;
+  resetReason:      number;   // esp_reset_reason_t value
+}
+
+/** USB link diagnostics — tracked at the parser layer. Reset on each new connection. */
+export interface LinkStats {
+  updateCount:    number;  // valid UPDATE packets received
+  stopCount:      number;  // valid STOP packets received
+  checksumErrors: number;  // UPDATE packets with bad XOR checksum
+  resyncEvents:   number;  // times parser lost byte-sync and had to rescan
+  gapsOver150ms:  number;  // UPDATE inter-packet gaps > 150ms (should be ~100ms)
+  maxGapMs:       number;  // largest inter-packet gap seen (ms)
+  bytesProcessed: number;  // total bytes fed into the parser
+}
+
 export class PacketParser {
   private buf: number[] = [];
-  onPacket: ((pkt: Packet) => void) | null = null;
+  onPacket:   ((pkt: Packet) => void) | null = null;
+  onSettings: ((pkt: SettingsPacket) => void) | null = null;
+  onStatus:   ((pkt: StatusPacket)   => void) | null = null;
+
+  private _stats: LinkStats = this._zeroStats();
+  private _lastUpdateWallMs = 0;
+  private _wasDiscarding = false;
+
+  private _zeroStats(): LinkStats {
+    return {
+      updateCount: 0, stopCount: 0, checksumErrors: 0,
+      resyncEvents: 0, gapsOver150ms: 0, maxGapMs: 0, bytesProcessed: 0,
+    };
+  }
+
+  get stats(): Readonly<LinkStats> { return this._stats; }
 
   /** Clear buffered bytes — call on each new connection to avoid stale-byte corruption. */
   reset(): void {
     this.buf = [];
   }
 
+  /** Reset all link statistics counters — call on each new connection. */
+  resetStats(): void {
+    this._stats = this._zeroStats();
+    this._lastUpdateWallMs = 0;
+    this._wasDiscarding = false;
+  }
+
   feed(chunk: Uint8Array): void {
+    this._stats.bytesProcessed += chunk.length;
     for (let i = 0; i < chunk.length; i++) this.buf.push(chunk[i]);
     this._parse();
   }
@@ -51,6 +137,7 @@ export class PacketParser {
   private _parse(): void {
     while (this.buf.length >= 2) {
       if (this.buf[0] !== SYNC) {
+        if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
         this.buf.shift();
         continue;
       }
@@ -66,12 +153,23 @@ export class PacketParser {
         let chk = 0;
         for (let i = 2; i < 28; i++) chk ^= this.buf[i];
         if (chk !== this.buf[28]) {
+          this._stats.checksumErrors++;
+          if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
           this.buf.shift(); // discard false 0xAA sync, rescan from next byte
           continue;
         }
 
-        const pkt = this.buf.splice(0, UPDATE_LEN); // checksum OK — consume
+        this._wasDiscarding = false;
+        const now = Date.now();
+        if (this._lastUpdateWallMs > 0) {
+          const gap = now - this._lastUpdateWallMs;
+          if (gap > this._stats.maxGapMs) this._stats.maxGapMs = gap;
+          if (gap > 150) this._stats.gapsOver150ms++;
+        }
+        this._lastUpdateWallMs = now;
+        this._stats.updateCount++;
 
+        const pkt = this.buf.splice(0, UPDATE_LEN); // checksum OK — consume
         const dv = new DataView(new Uint8Array(pkt).buffer);
         this.onPacket?.({
           type:       'update',
@@ -88,6 +186,8 @@ export class PacketParser {
 
       } else if (type === STOP_T) {
         if (this.buf.length < STOP_LEN) return;
+        this._wasDiscarding = false;
+        this._stats.stopCount++;
         const pkt = this.buf.splice(0, STOP_LEN);
         const dv  = new DataView(new Uint8Array(pkt).buffer);
         const pos = dv.getInt32(2, true);
@@ -96,7 +196,77 @@ export class PacketParser {
         const reason = new TextDecoder().decode(raw.slice(0, end === -1 ? 32 : end));
         this.onPacket?.({ type: 'stop', pos, reason });
 
+      } else if (type === SETTINGS_T) {
+        if (this.buf.length < SETTINGS_LEN) return;
+        // Validate XOR checksum over bytes [2..17]
+        let cs = 0;
+        for (let i = 2; i < 18; i++) cs ^= this.buf[i];
+        if (cs !== this.buf[18]) {
+          this._stats.checksumErrors++;
+          if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
+          this.buf.shift();
+          continue;
+        }
+        this._wasDiscarding = false;
+        const b = this.buf.splice(0, SETTINGS_LEN);
+        const settings: SettingsPacket = {
+          voltage:        b[2],
+          current:        b[3],
+          holdCurrent:    b[4],
+          holdDelay:      b[5],
+          microsteps:     b[6] | (b[7] << 8),
+          stallThreshold: b[8],
+          standstillMode: b[9],
+          stealthchop:    b[10] !== 0,
+          coolstep:       b[11] !== 0,
+          kp:             (b[12] | (b[13] << 8)) / 1000,
+          kd:             (b[14] | (b[15] << 8)) / 10000,
+          kv:             (b[16] | (b[17] << 8)) / 100000,
+        };
+        this.onSettings?.(settings);
+
+      } else if (type === STATUS_T) {
+        if (this.buf.length < STATUS_LEN) return;
+        // Validate XOR checksum over bytes [2..18]
+        let cs = 0;
+        for (let i = 2; i < 19; i++) cs ^= this.buf[i];
+        if (cs !== this.buf[19]) {
+          this._stats.checksumErrors++;
+          if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
+          this.buf.shift();
+          continue;
+        }
+        this._wasDiscarding = false;
+        const b = this.buf.splice(0, STATUS_LEN);
+        const status: StatusPacket = {
+          vbusMv:            b[2] | (b[3] << 8),
+          pgOk:              (b[4] & 0x01) !== 0,
+          otWarn:            (b[4] & 0x02) !== 0,
+          otShutdown:        (b[4] & 0x04) !== 0,
+          faultLag:          (b[4] & 0x08) !== 0,
+          faultBrownout:     (b[4] & 0x20) !== 0,
+          holdActive:        (b[4] & 0x40) !== 0,
+          isRunning:         (b[4] & 0x80) !== 0,
+          stealthchopActive: (b[5] & 0x01) !== 0,
+          standstill:        (b[5] & 0x02) !== 0,
+          shortGndA:         (b[5] & 0x08) !== 0,
+          shortGndB:         (b[5] & 0x10) !== 0,
+          openLoadA:         (b[5] & 0x20) !== 0,
+          openLoadB:         (b[5] & 0x40) !== 0,
+          holdSettled:       (b[5] & 0x80) !== 0,
+          csActual:          b[6],
+          pwmScale:          b[7],
+          tstep:             b[8] | (b[9] << 8),
+          sgResult:          b[10] | (b[11] << 8),
+          freeHeapKb:        b[12] | (b[13] << 8),
+          ctrlHwm:           b[14] | (b[15] << 8),
+          bootCount:         b[16] | (b[17] << 8),
+          resetReason:       b[18],
+        };
+        this.onStatus?.(status);
+
       } else {
+        if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
         this.buf.shift(); // unknown second byte — skip sync and rescan
       }
     }

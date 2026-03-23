@@ -66,4 +66,9 @@ bool isHoldActive();
 float getHoldTarget();
 uint8_t getHoldState(); // 0 = CORRECTING, 1 = SETTLED
 
+// Fault state accessors — readable from any task (volatile reads)
+bool isBrownoutFault();
+bool isLagFault();
+bool isEstopFault();
+
 } // namespace motion

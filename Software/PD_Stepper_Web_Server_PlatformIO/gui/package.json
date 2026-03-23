@@ -11,5 +11,8 @@
   "devDependencies": {
     "typescript": "^5.4",
     "vite": "^5.4"
+  },
+  "dependencies": {
+    "uplot": "^1.6.32"
   }
 }

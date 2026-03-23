@@ -28,11 +28,11 @@
             </label>
             <label>
               Speed (steps/s)
-              <input type="number" id="inp-speed" value="12000" step="100" min="1" />
+              <input type="number" id="inp-speed" value="12000" step="100" min="100" max="40000" />
             </label>
             <label>
               Accel (steps/s²)
-              <input type="number" id="inp-accel" value="9000" step="100" min="1" />
+              <input type="number" id="inp-accel" value="9000" step="100" min="100" />
             </label>
             <div class="form-actions">
               <label>
@@ -44,21 +44,131 @@
           </form>
         </section>
 
-        <!-- Settings -->
-        <section class="card" id="settings-section">
-          <h2>Settings</h2>
-          <label>
-            Run Current: <span id="current-val">60</span>%
-            <input
-              type="range"
-              id="slider-current"
-              min="10"
-              max="100"
-              value="60"
-              disabled
-            />
-          </label>
-          <button id="btn-apply-current" disabled>Apply Current</button>
+        <!-- PD Control Settings (right column alongside Move Command) -->
+        <section class="card" id="pd-settings-section">
+          <h2>PD Control</h2>
+          <div id="settings-sync-indicator" class="sync-indicator hidden">⏳ Awaiting settings…</div>
+
+          <div class="settings-row">
+            <label class="settings-label">Kp
+              <input type="number" id="set-kp" value="3.0" step="0.1" min="0" disabled />
+            </label>
+            <button id="btn-apply-kp" class="btn-apply" disabled>Apply</button>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">Kd
+              <input type="number" id="set-kd" value="0.1" step="0.001" min="0" disabled />
+            </label>
+            <button id="btn-apply-kd" class="btn-apply" disabled>Apply</button>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label">Kv (Phase Lead)
+              <input type="number" id="set-kv" value="0.0" step="0.001" min="0" disabled />
+            </label>
+            <button id="btn-apply-kv" class="btn-apply" disabled>Apply</button>
+          </div>
+
+          <button id="btn-save" class="btn-save" disabled>💾 Save to Flash</button>
+        </section>
+
+        <!-- TMC / Motion Settings (full width) -->
+        <section class="card" id="tmc-settings-section">
+          <h2>TMC / Motion Settings</h2>
+          <div class="settings-grid">
+
+            <div class="settings-row">
+              <label class="settings-label">Voltage
+                <select id="set-voltage" disabled>
+                  <option value="5">5 V</option>
+                  <option value="9">9 V</option>
+                  <option value="12">12 V</option>
+                  <option value="15">15 V</option>
+                  <option value="20" selected>20 V</option>
+                </select>
+              </label>
+              <button id="btn-apply-voltage" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">Microsteps
+                <select id="set-microsteps" disabled>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="4">4</option>
+                  <option value="8">8</option>
+                  <option value="16">16</option>
+                  <option value="32" selected>32</option>
+                  <option value="64">64</option>
+                  <option value="128">128</option>
+                  <option value="256">256</option>
+                </select>
+              </label>
+              <button id="btn-apply-microsteps" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">Run Current %
+                <input type="number" id="set-current" value="60" step="5" min="0" max="100" disabled />
+              </label>
+              <button id="btn-apply-current" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">Hold Current %
+                <input type="number" id="set-hold-current" value="25" step="5" min="0" max="100" disabled />
+              </label>
+              <button id="btn-apply-hold-current" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">Hold Delay %
+                <input type="number" id="set-hold-delay" value="8" step="5" min="0" max="100" disabled />
+              </label>
+              <button id="btn-apply-hold-delay" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">Stall Threshold
+                <input type="number" id="set-stall" value="10" step="1" min="0" max="255" disabled />
+              </label>
+              <button id="btn-apply-stall" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">Standstill Mode
+                <select id="set-standstill" disabled>
+                  <option value="NORMAL" selected>NORMAL</option>
+                  <option value="FREEWHEELING">FREEWHEELING</option>
+                  <option value="BRAKING">BRAKING</option>
+                  <option value="STRONG_BRAKING">STRONG BRAKING</option>
+                </select>
+              </label>
+              <button id="btn-apply-standstill" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row toggle-row">
+              <label class="settings-label toggle-label">
+                StealthChop
+                <label class="toggle-switch">
+                  <input type="checkbox" id="set-stealthchop" checked disabled />
+                  <span class="toggle-slider"></span>
+                </label>
+              </label>
+              <button id="btn-apply-stealthchop" class="btn-apply" disabled>Apply</button>
+            </div>
+
+            <div class="settings-row toggle-row">
+              <label class="settings-label toggle-label">
+                CoolStep
+                <label class="toggle-switch">
+                  <input type="checkbox" id="set-coolstep" checked disabled />
+                  <span class="toggle-slider"></span>
+                </label>
+              </label>
+              <button id="btn-apply-coolstep" class="btn-apply" disabled>Apply</button>
+            </div>
+
+          </div><!-- .settings-grid -->
         </section>
 
         <!-- Telemetry -->
@@ -78,8 +188,173 @@
               <span class="metric-label">Lag (steps)</span>
               <span class="metric-value" id="tele-lag">—</span>
             </div>
+            <div class="metric">
+              <span class="metric-label">Skipped Steps</span>
+              <span class="metric-value" id="tele-skipped">—</span>
+            </div>
           </div>
           <div id="stop-info" class="stop-info hidden"></div>
+
+          <!-- Per-move performance summary — shown after STOP packet -->
+          <div id="perf-metrics" class="hidden">
+            <h3 class="perf-heading">Move Performance</h3>
+            <div class="metrics">
+              <div class="metric">
+                <span class="metric-label">Skipped Steps (peak)</span>
+                <span class="metric-value" id="perf-skipped">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Max Tracking Error</span>
+                <span class="metric-value" id="perf-max-lag">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Lag Jitter (σ)</span>
+                <span class="metric-value" id="perf-lag-jitter">—</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Controller Effort</span>
+                <span class="metric-value" id="perf-effort">—</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Chart -->
+        <section class="card" id="chart-section">
+          <h2>Telemetry Chart <span class="chart-hint">click legend to toggle series</span></h2>
+          <div id="chart-container"></div>
+        </section>
+
+        <!-- USB Link Diagnostics -->
+        <section class="card" id="usb-section">
+          <h2>USB Link <span class="chart-hint">resets on connect</span></h2>
+          <div class="link-grid">
+            <div class="metric">
+              <span class="metric-label">UPDATE Packets</span>
+              <span class="metric-value" id="link-updates">0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">STOP (received / sent)</span>
+              <span class="metric-value ok" id="link-stops-ratio">0 / 0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Max UPDATE Gap</span>
+              <span class="metric-value" id="link-max-gap">0 ms</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Checksum Errors</span>
+              <span class="metric-value ok" id="link-csum-err">0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Resync Events</span>
+              <span class="metric-value ok" id="link-resyncs">0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Gaps &gt;150 ms</span>
+              <span class="metric-value ok" id="link-gaps">0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Bytes In / Out</span>
+              <span class="metric-value" id="link-bytes">0 / 0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Write Errors</span>
+              <span class="metric-value ok" id="link-write-err">0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Drain Discards</span>
+              <span class="metric-value" id="link-drain">0 B</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Driver Status (1 Hz STATUS packet from DiagnosticsTask) -->
+        <section class="card" id="driver-status-section">
+          <h2>Driver Status <span class="chart-hint">1 Hz, idle only</span></h2>
+
+          <!-- Power -->
+          <h3 class="status-group-heading">Power</h3>
+          <div class="metrics">
+            <div class="metric">
+              <span class="metric-label">VBUS Voltage</span>
+              <span class="metric-value" id="ds-vbus">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">PG Status</span>
+              <span class="metric-value" id="ds-pg">—</span>
+            </div>
+          </div>
+
+          <!-- TMC Health -->
+          <h3 class="status-group-heading">TMC Health</h3>
+          <div class="metrics">
+            <div class="metric">
+              <span class="metric-label">CS Actual (0–31)</span>
+              <span class="metric-value" id="ds-cs">—</span>
+              <div class="cs-bar"><div class="cs-fill" id="ds-cs-bar" style="width:0%"></div></div>
+            </div>
+            <div class="metric">
+              <span class="metric-label">PWM Scale</span>
+              <span class="metric-value" id="ds-pwm">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">TSTEP</span>
+              <span class="metric-value" id="ds-tstep">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">StallGuard (0–1023)</span>
+              <span class="metric-value" id="ds-sg">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">StealthChop Active</span>
+              <span class="metric-value" id="ds-stealth">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Standstill</span>
+              <span class="metric-value" id="ds-standstill">—</span>
+            </div>
+          </div>
+
+          <!-- Faults -->
+          <h3 class="status-group-heading">Faults</h3>
+          <div class="fault-badges">
+            <span class="fault-badge" id="fb-ot-warn">OT Warn</span>
+            <span class="fault-badge" id="fb-ot-shut">OT Shutdown</span>
+            <span class="fault-badge" id="fb-short-a">Short GND A</span>
+            <span class="fault-badge" id="fb-short-b">Short GND B</span>
+            <span class="fault-badge" id="fb-open-a">Open Load A</span>
+            <span class="fault-badge" id="fb-open-b">Open Load B</span>
+            <span class="fault-badge" id="fb-lag">Lag Fault</span>
+            <span class="fault-badge" id="fb-brownout">Brownout</span>
+          </div>
+
+          <!-- System -->
+          <h3 class="status-group-heading">System</h3>
+          <div class="metrics">
+            <div class="metric">
+              <span class="metric-label">Free Heap</span>
+              <span class="metric-value" id="ds-heap">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">CtrlTask Stack HWM</span>
+              <span class="metric-value" id="ds-hwm">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Boot Count</span>
+              <span class="metric-value" id="ds-boot">—</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Reset Reason</span>
+              <span class="metric-value" id="ds-reset">—</span>
+            </div>
+          </div>
+
+          <!-- Hold State -->
+          <h3 class="status-group-heading">Hold State</h3>
+          <div class="fault-badges">
+            <span class="fault-badge" id="fb-hold-active">Hold Active</span>
+            <span class="fault-badge" id="fb-hold-settled">Settled</span>
+          </div>
         </section>
       </main>
     </div>

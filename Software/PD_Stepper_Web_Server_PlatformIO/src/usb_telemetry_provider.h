@@ -1,6 +1,31 @@
 #pragma once
 #include "telemetry_provider.h"
 #include <Arduino.h>
+#include <freertos/semphr.h>
+
+/**
+ * Shared mutex that serialises all USBSerial.write() calls across tasks and cores.
+ *
+ * Background: TelemetryTask (Core 0) writes UPDATE/STOP packets while s_running.
+ * DiagnosticsTask (Core 0) and sendSettingsPacket() in loop() (Core 1) both write
+ * when !s_running.  Even though "at rest" makes concurrent TelemetryTask writes
+ * impossible, DiagnosticsTask and sendSettingsPacket can race on two different cores.
+ * All USBSerial.write() call sites must hold this mutex.
+ *
+ * Initialised in main.cpp setup() before motion::init(), so it is ready before
+ * any task that calls USBSerial.write() is created.
+ */
+extern SemaphoreHandle_t g_usbWriteMutex;
+
+/** RAII guard — take for up to 50 ms.  A USB CDC write completes in < 1 ms. */
+struct UsbWriteGuard {
+    bool held;
+    UsbWriteGuard()
+        : held(g_usbWriteMutex &&
+               xSemaphoreTake(g_usbWriteMutex, pdMS_TO_TICKS(50)) == pdTRUE) {}
+    ~UsbWriteGuard() { if (held) xSemaphoreGive(g_usbWriteMutex); }
+    explicit operator bool() const { return held; }
+};
 
 /**
  * @brief Binary USB Serial telemetry provider.
@@ -70,7 +95,8 @@ public:
       chk ^= buf[i];
     buf[28] = chk;
 
-    USBSerial.write(buf, sizeof(buf));
+    UsbWriteGuard guard;
+    if (guard) USBSerial.write(buf, sizeof(buf));
   }
 
   size_t sendStop(const char *reason, long pos) override {
@@ -85,7 +111,8 @@ public:
     memset(&buf[6], 0, 32);
     strncpy((char *)&buf[6], reason, 31);
 
-    size_t written = USBSerial.write(buf, sizeof(buf));
+    UsbWriteGuard guard;
+    size_t written = guard ? USBSerial.write(buf, sizeof(buf)) : 0;
     // Do NOT call flush() here — on ESP32-S3 USB CDC, flush() can corrupt the
     // TX buffer, dropping bytes that were already queued (including this packet).
     // The CDC driver will send the data automatically within ~1 ms.

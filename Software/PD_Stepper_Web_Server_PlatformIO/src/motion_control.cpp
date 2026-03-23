@@ -6,7 +6,9 @@
 #include "telemetry_provider.h"
 #include "tmc_driver.h"
 #include "trajectory_buffer.h"
+#include "usb_telemetry_provider.h"
 #include <esp_task_wdt.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -16,6 +18,13 @@
 #define SW1_PIN    PIN_SW1
 #define VBUS_PIN   PIN_VBUS
 #define DIV_RATIO  0.1189427313f
+
+// Extern variables defined at global scope in main.cpp.
+// DiagnosticsTask (Core 0) reads them at 1 Hz; loop() (Core 1) writes them.
+// Declared volatile both here and at definition to prevent register caching.
+extern volatile float    VBusVoltage;
+extern volatile bool     PGState;
+extern uint32_t          bootCount;
 
 namespace motion {
 
@@ -72,6 +81,7 @@ static QueueHandle_t     s_teleQueue     = nullptr; // ControlTask → Telemetry
 static TaskHandle_t      s_plannerHandle = nullptr;
 static TaskHandle_t      s_controlHandle = nullptr;
 static TaskHandle_t      s_teleHandle    = nullptr;
+static TaskHandle_t      s_diagHandle    = nullptr;
 static TelemetryProvider *s_telemetry    = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -255,6 +265,102 @@ static void planChain(const MotionCommand* cmds, int n,
         Serial1.printf("DBG:PLAN[%d] dist=%.0f fwd=%d entry=%.0f cruise=%.0f exit=%.0f\n",
                        i, out[i].dist, (int)out[i].forward,
                        out[i].entryVel, out[i].cruiseVel, out[i].exitVel);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics Task — Core 0, priority 2, runs at 1 Hz
+//
+// Reads TMC UART registers (safe on Core 0 via TmcLock), assembles 0xAA 0xDD
+// STATUS packets, and writes them to USBSerial when the motor is not running.
+// STATUS packets are suppressed during moves to avoid write-interleaving with
+// TelemetryTask's UPDATE/STOP packets.
+// ---------------------------------------------------------------------------
+static void DiagnosticsTask(void *) {
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        // TMC UART reads — Core 0, TmcLock-protected inside each call
+        tmc::DriverStatus ds = tmc::getDriverStatus();
+        uint8_t  pwmScale    = (uint8_t)tmc::getPwmScaleSum();
+        uint32_t tstep       = tmc::getInterstepDuration();
+        uint16_t sgResult    = (uint16_t)tmc::getStallGuardResult();
+
+        // Cross-core reads — written by loop() on Core 1 at 1 Hz (volatile)
+        float vbus = VBusVoltage;
+        bool  pg   = (PGState == 0); // active-low on CH224K
+
+        // System health
+        uint16_t freeHeapKB = (uint16_t)(esp_get_free_heap_size() / 1024);
+        uint16_t ctrlHWM    = s_controlHandle
+                              ? (uint16_t)uxTaskGetStackHighWaterMark(s_controlHandle) : 0;
+        uint16_t bootCnt    = bootCount > 65535u ? 0xFFFF : (uint16_t)bootCount;
+        uint8_t  resetRsn   = (uint8_t)esp_reset_reason();
+
+        // Motion / fault state (all static volatile — safe single-read)
+        bool running     = s_running;
+        bool holdActive  = g_hold_active;
+        bool holdSettled = (g_hold_state == HOLD_SETTLED);
+        bool brownout    = g_fault_brownout;
+        bool lagFault    = g_fault_lag;
+
+        // Serial1 diagnostic summary (AUX UART, always emitted)
+        Serial1.printf("[DIAG] CS:%u/31 SC:%u OT:%u%s PWM:%u TSTEP:%lu SG:%u Heap:%ukB\r\n",
+            ds.current_scaling, ds.stealth_chop ? 1 : 0,
+            ds.over_temperature_warning ? 1 : 0,
+            ds.over_temperature_shutdown ? " SHUTDOWN" : "",
+            pwmScale, (unsigned long)tstep, sgResult, freeHeapKB);
+
+        // Send STATUS binary packet only when motor is not running.
+        // TelemetryTask writes UPDATE packets during moves; emitting STATUS
+        // concurrently from this task would interleave bytes on USBSerial.
+        if (!running) {
+            uint8_t buf[20];
+            buf[0] = 0xAA; buf[1] = 0xDD;
+
+            uint16_t vbusMv = (uint16_t)(vbus * 1000.0f);
+            buf[2] = vbusMv & 0xFF; buf[3] = vbusMv >> 8;
+
+            uint8_t fa = 0;
+            if (pg)                                fa |= (1 << 0); // PG OK
+            if (ds.over_temperature_warning)       fa |= (1 << 1);
+            if (ds.over_temperature_shutdown)      fa |= (1 << 2);
+            if (lagFault)                          fa |= (1 << 3);
+            if (brownout)                          fa |= (1 << 5);
+            if (holdActive)                        fa |= (1 << 6);
+            // bit 7 (isRunning) is always 0 here since we only send when !running
+            buf[4] = fa;
+
+            uint8_t fb = 0;
+            if (ds.stealth_chop)                   fb |= (1 << 0);
+            if (ds.standstill)                     fb |= (1 << 1);
+            if (ds.short_to_ground_a)              fb |= (1 << 3);
+            if (ds.short_to_ground_b)              fb |= (1 << 4);
+            if (ds.open_load_a)                    fb |= (1 << 5);
+            if (ds.open_load_b)                    fb |= (1 << 6);
+            if (holdSettled)                       fb |= (1 << 7);
+            buf[5] = fb;
+
+            buf[6] = (uint8_t)ds.current_scaling;
+            buf[7] = pwmScale;
+
+            uint16_t tstep16 = tstep > 65535u ? 0xFFFF : (uint16_t)tstep;
+            buf[8] = tstep16 & 0xFF; buf[9] = tstep16 >> 8;
+
+            buf[10] = sgResult & 0xFF; buf[11] = sgResult >> 8;
+            buf[12] = freeHeapKB & 0xFF; buf[13] = freeHeapKB >> 8;
+            buf[14] = ctrlHWM & 0xFF; buf[15] = ctrlHWM >> 8;
+            buf[16] = bootCnt & 0xFF; buf[17] = bootCnt >> 8;
+            buf[18] = resetRsn;
+
+            // XOR checksum over bytes[2..18]
+            uint8_t cs = 0;
+            for (int i = 2; i < 19; i++) cs ^= buf[i];
+            buf[19] = cs;
+
+            UsbWriteGuard guard;
+            if (guard) USBSerial.write(buf, 20);
+        }
     }
 }
 
@@ -687,8 +793,12 @@ void init() {
     // after motion::init(). Do NOT set it here — it would override user-saved settings.
 
     // Telemetry Task: Core 0, lowest priority — allowed to block on USB TX
-    xTaskCreatePinnedToCore(TelemetryTask, "TeleTask",   2048, nullptr,  3,
+    xTaskCreatePinnedToCore(TelemetryTask,    "TeleTask",   2048, nullptr,  3,
                             &s_teleHandle,    0);
+
+    // Diagnostics Task: Core 0, low priority — 1 Hz TMC UART + STATUS packet
+    xTaskCreatePinnedToCore(DiagnosticsTask,  "DiagTask",   4096, nullptr,  2,
+                            &s_diagHandle,    0);
 
     // Planner Task: Core 0, lower priority — can use UART/ADC safely
     xTaskCreatePinnedToCore(PlannerTask,   "PlannerTask", 8192, nullptr,  5,
@@ -721,5 +831,9 @@ bool isRunning() { return s_running; }
 bool isHoldActive() { return g_hold_active; }
 float getHoldTarget() { return g_hold_target; }
 uint8_t getHoldState() { return g_hold_state; }
+
+bool isBrownoutFault() { return g_fault_brownout; }
+bool isLagFault()      { return g_fault_lag; }
+bool isEstopFault()    { return g_fault_estop; }
 
 } // namespace motion

@@ -13,6 +13,10 @@
 
 Preferences preferences;
 
+// USB write mutex — serialises USBSerial.write() across TelemetryTask, DiagnosticsTask,
+// and sendSettingsPacket() (declared in usb_telemetry_provider.h as extern).
+SemaphoreHandle_t g_usbWriteMutex = nullptr;
+
 // Telemetry provider (USB binary — swappable via TelemetryProvider interface)
 static UsbTelemetryProvider usbTelemetry;
 
@@ -20,11 +24,15 @@ static UsbTelemetryProvider usbTelemetry;
 void configureSettings();
 void readSettings();
 void writeSettings();
+void sendSettingsPacket();
 
-// Runtime state
-bool PGState = 0;
-float VBusVoltage = 0;
+// Runtime state — volatile for safe cross-core reads (loop() Core 1, DiagnosticsTask Core 0)
+volatile bool  PGState     = 0;
+volatile float VBusVoltage = 0;
 const float DIV_RATIO = 0.1189427313; // 20k/2.7k voltage divider
+
+// Boot counter — file-scope global so DiagnosticsTask can read it via extern
+uint32_t bootCount = 0;
 
 // Persistent settings (loaded from Preferences on boot, saved by "save" command)
 static int   setVoltage     = 20;
@@ -34,6 +42,11 @@ static int   setStall       = 10;
 static int   setHoldCurrent = 25;
 static int   setHoldDelay   = 8;
 static char  standstillMode[16] = "NORMAL";
+static bool  stealthchopEnabled = true;
+static bool  coolstepEnabled    = true;
+static float setKp = 3.0f;
+static float setKd = 0.1f;
+static float setKv = 0.0f;
 
 // Note: button debounce and open-loop position control variables have been
 // removed — the new motion architecture handles all motion via serial commands.
@@ -98,12 +111,14 @@ void setup() {
   // USB CDC — binary protocol only (no text written to USBSerial anywhere).
   USBSerial.begin(921600); // Must match TriggerMove.py --baud
   delay(500);              // Short stabilization time
+  // USB write mutex — must exist before motion::init() launches tasks that write to USBSerial
+  g_usbWriteMutex = xSemaphoreCreateMutex();
   Serial1.println("\r\n[SERIAL] Ready");
 
   // Reset reason and boot counter
   esp_reset_reason_t reason = esp_reset_reason();
   preferences.begin("system", false);
-  uint32_t bootCount = preferences.getUInt("boot_count", 0);
+  bootCount = preferences.getUInt("boot_count", 0);
   bootCount++;
   preferences.putUInt("boot_count", bootCount);
   preferences.end();
@@ -158,8 +173,47 @@ void setup() {
   motion::init();
   motion::setMicrosteps(setMicrosteps);
   motion::setConfiguredVoltage((float)setVoltage); // derive brownout threshold
+  sendSettingsPacket(); // send initial SETTINGS packet so GUI can populate panel
 
   Serial1.println("Setup complete");
+}
+
+/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 19 bytes) over USBSerial.
+/// Safe to call from setup() and processSerialCommands() (both run when
+/// TelemetryTask is idle).  g_usbWriteMutex serialises against DiagnosticsTask.
+void sendSettingsPacket() {
+  uint8_t buf[19];
+  buf[0] = 0xAA; buf[1] = 0xEE;
+  buf[2] = (uint8_t)setVoltage;
+  buf[3] = (uint8_t)setCurrent;
+  buf[4] = (uint8_t)setHoldCurrent;
+  buf[5] = (uint8_t)setHoldDelay;
+  uint16_t ms = (uint16_t)setMicrosteps;
+  buf[6] = ms & 0xFF; buf[7] = ms >> 8;
+  buf[8] = (uint8_t)setStall;
+  uint8_t ssm = 0;
+  if      (strcmp(standstillMode, "FREEWHEELING")   == 0) ssm = 1;
+  else if (strcmp(standstillMode, "BRAKING")        == 0) ssm = 2;
+  else if (strcmp(standstillMode, "STRONG_BRAKING") == 0) ssm = 3;
+  buf[9]  = ssm;
+  buf[10] = stealthchopEnabled ? 1 : 0;
+  buf[11] = coolstepEnabled    ? 1 : 0;
+  // Clamp float gains to uint16_t range before casting to prevent UB and
+  // silent wrap-around (e.g. Kv=1.0 would overflow the x100000 encoding).
+  float kpClamped = setKp < 0.0f ? 0.0f : (setKp > 65.535f   ? 65.535f   : setKp);
+  float kdClamped = setKd < 0.0f ? 0.0f : (setKd > 6.5535f   ? 6.5535f   : setKd);
+  float kvClamped = setKv < 0.0f ? 0.0f : (setKv > 0.65535f  ? 0.65535f  : setKv);
+  uint16_t kpInt = (uint16_t)(kpClamped * 1000.0f);
+  buf[12] = kpInt & 0xFF; buf[13] = kpInt >> 8;
+  uint16_t kdInt = (uint16_t)(kdClamped * 10000.0f);
+  buf[14] = kdInt & 0xFF; buf[15] = kdInt >> 8;
+  uint16_t kvInt = (uint16_t)(kvClamped * 100000.0f);
+  buf[16] = kvInt & 0xFF; buf[17] = kvInt >> 8;
+  uint8_t cs = 0;
+  for (int i = 2; i < 18; i++) cs ^= buf[i];
+  buf[18] = cs;
+  UsbWriteGuard guard;
+  if (guard) USBSerial.write(buf, 19);
 }
 
 void processSerialCommands() {
@@ -192,12 +246,14 @@ void processSerialCommands() {
 
           } else if (strcmp(cmd, "set_phase_lead") == 0) {
             float kv = doc["kv"] | 0.0f;
+            setKv = kv;
             motion::setPhaseLeadGain(kv);
             Serial1.printf("Set phase lead gain Kv: %.4f\n", kv);
 
           } else if (strcmp(cmd, "set_pd") == 0) {
             float kp = doc["kp"] | 3.0f;
             float kd = doc["kd"] | 0.1f;
+            setKp = kp; setKd = kd;
             motion::setPD(kp, kd);
             Serial1.printf("Set PD - Kp: %.4f, Kd: %.4f\n", kp, kd);
 
@@ -205,6 +261,7 @@ void processSerialCommands() {
             // Legacy alias: map ki → kd for backwards compat with scripts
             float kp = doc["kp"] | 3.0f;
             float kd = doc["kd"] | doc["ki"] | 0.1f;
+            setKp = kp; setKd = kd;
             motion::setPD(kp, kd);
             Serial1.printf("Set PD (legacy set_pid) - Kp: %.4f, Kd: %.4f\n", kp, kd);
 
@@ -247,6 +304,16 @@ void processSerialCommands() {
             configureSettings();
             Serial1.printf("Set standstill mode: %s\n", standstillMode);
 
+          } else if (strcmp(cmd, "set_stealthchop") == 0) {
+            stealthchopEnabled = (int)(doc["value"] | 1) != 0;
+            configureSettings();
+            Serial1.printf("Set StealthChop: %s\n", stealthchopEnabled ? "ON" : "OFF");
+
+          } else if (strcmp(cmd, "set_coolstep") == 0) {
+            coolstepEnabled = (int)(doc["value"] | 1) != 0;
+            configureSettings();
+            Serial1.printf("Set CoolStep: %s\n", coolstepEnabled ? "ON" : "OFF");
+
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();
             Serial1.println("Settings saved to flash");
@@ -255,9 +322,15 @@ void processSerialCommands() {
             Serial1.printf(
                 "{\"voltage\":%d,\"current\":%d,\"hold_current\":%d,"
                 "\"hold_delay\":%d,\"microsteps\":%d,"
-                "\"stall_threshold\":%d,\"standstill_mode\":\"%s\"}\n",
+                "\"stall_threshold\":%d,\"standstill_mode\":\"%s\","
+                "\"stealthchop\":%s,\"coolstep\":%s,"
+                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f}\n",
                 setVoltage, setCurrent, setHoldCurrent, setHoldDelay,
-                setMicrosteps, setStall, standstillMode);
+                setMicrosteps, setStall, standstillMode,
+                stealthchopEnabled ? "true" : "false",
+                coolstepEnabled    ? "true" : "false",
+                setKp, setKd, setKv);
+            sendSettingsPacket();
 
           } else if (strcmp(cmd, "get_driver_status") == 0) {
             tmc::DriverStatus ds   = tmc::getDriverStatus();
@@ -318,26 +391,8 @@ void loop() {
     // Diagnostic output to AUX UART (Serial1), not USB CDC
     Serial1.printf("[SYSTEM] VBus: %.2fV, PG: %s, Core: %d\r\n", VBusVoltage,
                      PGState ? "FAIL" : "OK", xPortGetCoreID());
-
-    // TMC2209 driver diagnostics (UART read — mutex-protected, safe from Core 1 at 1 Hz)
-    tmc::DriverStatus ds = tmc::getDriverStatus();
-    uint16_t pwmScale    = tmc::getPwmScaleSum();
-    Serial1.printf("[TMC] CS:%u/31 Standstill:%u StealthChop:%u OT:%u%s PWM:%u\r\n",
-                   ds.current_scaling, ds.standstill ? 1 : 0,
-                   ds.stealth_chop ? 1 : 0,
-                   ds.over_temperature_warning ? 1 : 0,
-                   ds.over_temperature_shutdown ? " SHUTDOWN" : "",
-                   pwmScale);
-
-    // Hold state diagnostics
-    static int32_t lastHoldStepCount = 0;
-    int32_t curStepCount = stepgen::getStepCount();
-    int32_t stepDelta = abs(curStepCount - lastHoldStepCount);
-    lastHoldStepCount = curStepCount;
-    Serial1.printf("[HOLD] Active:%u State:%s StepDelta:%ld/s\r\n",
-                   motion::isHoldActive() ? 1 : 0,
-                   !motion::isHoldActive() ? "INACTIVE" : (motion::getHoldState() == 0 ? "CORRECTING" : "SETTLED"),
-                   (long)stepDelta);
+    // TMC UART reads and hold-state diagnostics are handled by DiagnosticsTask
+    // (Core 0) to keep Core 1 loop() free of UART traffic.
   }
 
   // Explicitly yield to reset the loopTask watchdog
@@ -387,6 +442,12 @@ void configureSettings() {
   } else {
     tmc::setStandstillMode(0); // NORMAL (default)
   }
+
+  // Apply StealthChop and CoolStep mode settings
+  if (stealthchopEnabled) tmc::enableStealthChop();
+  else                    tmc::disableStealthChop();
+  if (coolstepEnabled) tmc::enableCoolStep(1, 0);
+  else                 tmc::disableCoolStep();
 }
 
 void readSettings() {
@@ -408,7 +469,15 @@ void readSettings() {
     String mode   = preferences.getString("standstillMode", "NORMAL");
     strncpy(standstillMode, mode.c_str(), sizeof(standstillMode) - 1);
     standstillMode[sizeof(standstillMode) - 1] = '\0';
+    stealthchopEnabled = preferences.getBool("stealthChop", true);
+    coolstepEnabled    = preferences.getBool("coolStep",    true);
+    setKp = preferences.getFloat("kp", 3.0f);
+    setKd = preferences.getFloat("kd", 0.1f);
+    setKv = preferences.getFloat("kv", 0.0f);
     preferences.end();
+    // Apply PD gains now (motion tasks pick them up on start)
+    motion::setPD(setKp, setKd);
+    motion::setPhaseLeadGain(setKv);
   }
 }
 
@@ -421,6 +490,11 @@ void writeSettings() {
   preferences.putInt("holdDelay",      setHoldDelay);
   preferences.putInt("stallThreshold", setStall);
   preferences.putString("standstillMode", standstillMode);
+  preferences.putBool("stealthChop",   stealthchopEnabled);
+  preferences.putBool("coolStep",      coolstepEnabled);
+  preferences.putFloat("kp",           setKp);
+  preferences.putFloat("kd",           setKd);
+  preferences.putFloat("kv",           setKv);
   Serial1.println("Saving settings to flash");
   preferences.end();
   configureSettings();

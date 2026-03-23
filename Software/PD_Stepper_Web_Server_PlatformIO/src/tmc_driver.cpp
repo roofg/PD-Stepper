@@ -104,6 +104,10 @@ DriverStatus getDriverStatus() {
   s.stealth_chop              = raw.stealth_chop_mode;
   s.over_temperature_warning  = raw.over_temperature_warning;
   s.over_temperature_shutdown = raw.over_temperature_shutdown;
+  s.short_to_ground_a         = raw.short_to_ground_a;
+  s.short_to_ground_b         = raw.short_to_ground_b;
+  s.open_load_a               = raw.open_load_a;
+  s.open_load_b               = raw.open_load_b;
   return s;
 }
 
