@@ -365,6 +365,9 @@ select:disabled { opacity: 0.4; }
   gap: 6px;
   margin-bottom: 4px;
 }
+.hold-state-badges {
+  margin-top: 10px;
+}
 .fault-badge {
   background: var(--bg);
   border: 1px solid var(--border);

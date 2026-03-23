@@ -293,10 +293,12 @@
                   <span class="metric-value" id="hold-settle-time">—</span>
                 </div>
               </div>
+              <div class="fault-badges hold-state-badges">
+                <span class="fault-badge" id="fb-hold-active">Hold Active</span>
+                <span class="fault-badge" id="fb-hold-settled">Settled</span>
+              </div>
             </div>
           </section>
-
-          <!-- Chart -->
           <section class="card" id="chart-section">
             <h2>Telemetry Chart <span class="chart-hint">click legend to toggle series</span>
               <button id="btn-reset-chart" class="btn-reset-chart" title="Clear chart data">↺ Reset</button>
@@ -369,12 +371,6 @@
                 <span class="metric-label">Reset Reason</span>
                 <span class="metric-value" id="ds-reset">—</span>
               </div>
-            </div>
-            <!-- Hold State -->
-            <h3 class="status-group-heading">Hold State</h3>
-            <div class="fault-badges">
-              <span class="fault-badge" id="fb-hold-active">Hold Active</span>
-              <span class="fault-badge" id="fb-hold-settled">Settled</span>
             </div>
           </section>
 
