@@ -633,6 +633,13 @@ static void ControlTask(void *) {
     long     lastTeleEnc  = 0;
     uint8_t  estopCount   = 0; // consecutive LOW reads needed to trip E-stop
 
+    // Hold-phase velocity: accumulate encoder delta over 100 ms windows so that
+    // the velocity estimate has 10× better resolution than the 10 ms packet rate.
+    // At 32 µsteps: 1 count / 10 ms = 156 steps/s; 1 count / 100 ms = 15.6 steps/s.
+    long     holdVelRefEnc = 0;
+    uint32_t holdVelRefMs  = 0;
+    float    holdVelEst    = 0.0f;
+
     // AUX diagnostic state for hold-phase telemetry rate verification
     uint32_t holdDiagCount  = 0;
     uint32_t holdDiagLastMs = 0;
@@ -699,12 +706,26 @@ static void ControlTask(void *) {
                 // Hold telemetry: 100 Hz while correcting (matches motion rate so the
                 // settle transient is fully visible in the chart), 10 Hz once settled.
                 const uint32_t holdTeleInterval = (g_hold_state == HOLD_CORRECTING) ? 10 : 100;
+
+                // Velocity window: accumulate encoder delta over 100 ms regardless of
+                // packet rate. This gives 10× lower quantization noise vs 10 ms window.
+                // (1 encoder count / 100 ms = 15.6 steps/s at 32 µsteps, vs 156 at 10 ms)
+                if (holdVelRefMs == 0) {
+                    // First entry into hold: seed the window from current position
+                    holdVelRefEnc = encCounts;
+                    holdVelRefMs  = millis();
+                }
+                if (millis() - holdVelRefMs >= 100) {
+                    float velDt = (millis() - holdVelRefMs) / 1000.0f;
+                    holdVelEst  = (float)(encCounts - holdVelRefEnc)
+                                  * counts_to_steps / (velDt > 0.001f ? velDt : 0.1f);
+                    holdVelRefEnc = encCounts;
+                    holdVelRefMs  = millis();
+                }
+
                 if (millis() - lastTeleMs >= holdTeleInterval) {
-                    float dt_s  = (millis() - lastTeleMs) / 1000.0f;
                     lastTeleMs  = millis();
-                    float mVel  = (float)(encCounts - lastTeleEnc)
-                                  * counts_to_steps / (dt_s > 0.001f ? dt_s : 0.1f);
-                    lastTeleEnc = encCounts;
+                    lastTeleEnc = encCounts; // keep in sync (used by motion path after next move)
 
                     if (s_teleQueue) {
                         TelemetryData d;
@@ -714,26 +735,25 @@ static void ControlTask(void *) {
                         d.meas      = (long)measPos;
                         d.target    = (long)g_hold_target;
                         d.lag       = (int)(g_hold_target - measPos);
-                        d.vel       = (int)mVel;   // measured encoder velocity — not 0 during correcting
+                        d.vel       = (int)holdVelEst;  // 100 ms window → low quantization noise
                         d.p_acc     = 0;
                         d.p_dist    = 0;
                         d.sg_result = g_sg_result;
                         d.cs_actual = g_cs_actual_cache;
                         d.pwm_scale = g_pwm_scale_cache;
-                        d.mvel      = (int16_t)mVel;
+                        d.mvel      = (int16_t)holdVelEst;
                         xQueueSend(s_teleQueue, &d, 0);
                     }
 
-                    // AUX diagnostic: log hold tele rate and velocity.
-                    // Prints on packet #1 (hold entry), then every 20 packets,
-                    // so at 100 Hz we see a line every ~200 ms; at 10 Hz every 2 s.
+                    // AUX diagnostic: log hold tele rate and smoothed velocity.
+                    // Prints on packet #1 (hold entry), then every 20 packets.
                     holdDiagCount++;
                     if (holdDiagCount == 1 || holdDiagCount % 20 == 0) {
                         uint32_t gapMs = (holdDiagLastMs > 0)
                                          ? (uint32_t)(millis() - holdDiagLastMs) * 20
-                                         : 0; // extrapolated rate window
-                        Serial1.printf("DBG:HOLD #%lu interval=%lu mVel=%.1f lag=%d state=%s gap=%lums\n",
-                                       holdDiagCount, holdTeleInterval, mVel,
+                                         : 0;
+                        Serial1.printf("DBG:HOLD #%lu interval=%lu vel=%.1f lag=%d state=%s gap=%lums\n",
+                                       holdDiagCount, holdTeleInterval, holdVelEst,
                                        (int)(g_hold_target - measPos),
                                        g_hold_state == HOLD_CORRECTING ? "CORR" : "SETT",
                                        gapMs);
@@ -745,6 +765,8 @@ static void ControlTask(void *) {
                 pd.reset();
                 g_hold_state     = HOLD_CORRECTING;
                 g_settle_start_ms = 0; // ensure clean state for next hold activation
+                holdVelRefMs     = 0;  // reset velocity window so first entry re-seeds
+                holdVelEst       = 0.0f;
                 holdDiagCount    = 0;  // reset per-hold diagnostic counter
                 holdDiagLastMs   = 0;
             }
