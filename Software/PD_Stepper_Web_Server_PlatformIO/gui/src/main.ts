@@ -105,28 +105,35 @@ let currentKd = 0.1;
 setControlsEnabled(false);
 chart.init(chartContainer);
 
+function setMotionEnabled(on: boolean): void {
+  btnMove.disabled     = !on;
+  inpDistance.disabled = !on;
+  inpSpeed.disabled    = !on;
+  inpAccel.disabled    = !on;
+  chkAbs.disabled      = !on;
+}
+
+function setSettingsEnabled(on: boolean): void {
+  setKp.disabled          = !on;
+  setKd.disabled          = !on;
+  setKv.disabled          = !on;
+  btnApplyPd.disabled     = !on;
+  btnSave.disabled        = !on;
+  setVoltage.disabled     = !on;
+  setMicrosteps.disabled  = !on;
+  setCurrent.disabled     = !on;
+  setHoldCurrent.disabled = !on;
+  setHoldDelay.disabled   = !on;
+  setStall.disabled       = !on;
+  setStandstill.disabled  = !on;
+  setStealthchop.disabled = !on;
+  setCoolstep.disabled    = !on;
+  btnApplyTmc.disabled    = !on;
+}
+
 function setControlsEnabled(on: boolean): void {
-  btnMove.disabled         = !on;
-  inpDistance.disabled     = !on;
-  inpSpeed.disabled        = !on;
-  inpAccel.disabled        = !on;
-  chkAbs.disabled          = !on;
-  // Settings controls
-  setKp.disabled           = !on;
-  setKd.disabled           = !on;
-  setKv.disabled           = !on;
-  btnApplyPd.disabled      = !on;
-  btnSave.disabled         = !on;
-  setVoltage.disabled      = !on;
-  setMicrosteps.disabled   = !on;
-  setCurrent.disabled      = !on;
-  setHoldCurrent.disabled  = !on;
-  setHoldDelay.disabled    = !on;
-  setStall.disabled        = !on;
-  setStandstill.disabled   = !on;
-  setStealthchop.disabled  = !on;
-  setCoolstep.disabled     = !on;
-  btnApplyTmc.disabled     = !on;
+  setMotionEnabled(on);
+  setSettingsEnabled(on);
 }
 
 function setMotionStatus(moving: boolean): void {
@@ -196,16 +203,17 @@ conn.onConnectionChange = (connected: boolean): void => {
   connStatus.textContent = connected ? 'Connected' : 'Disconnected';
   btnConnect.textContent = connected ? 'Disconnect' : 'Connect';
   btnConnect.classList.toggle('connected', connected);
-  setControlsEnabled(connected);
   if (!connected) {
+    setControlsEnabled(false);
     setMotionStatus(false);
     if (linkInterval) { clearInterval(linkInterval); linkInterval = null; }
   } else {
+    setMotionEnabled(true);
+    setSettingsEnabled(false);   // gated — unlocked by onSettings
     movesSent = stopsReceived = 0;
     syncIndicator.classList.remove('hidden');
     linkInterval = setInterval(updateLinkStats, 1000);
     updateLinkStats();
-    // Request current settings from firmware
     conn.write('{"cmd":"get_settings"}\n').catch(() => undefined);
   }
 };
@@ -276,6 +284,7 @@ const standstillModes = ['NORMAL', 'FREEWHEELING', 'BRAKING', 'STRONG_BRAKING'];
 
 conn.onSettings = (pkt: SettingsPacket): void => {
   syncIndicator.classList.add('hidden');
+  setSettingsEnabled(true);   // unlock now that values are known
 
   setVoltage.value     = pkt.voltage.toString();
   setMicrosteps.value  = pkt.microsteps.toString();
