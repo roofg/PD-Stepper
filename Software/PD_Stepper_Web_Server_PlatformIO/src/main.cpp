@@ -350,6 +350,10 @@ void processSerialCommands() {
               Serial1.printf("Set CoolStep: %s\n", coolstepEnabled ? "ON" : "OFF");
             }
 
+          } else if (strcmp(cmd, "estop") == 0) {
+            motion::triggerEstop();
+            Serial1.println("E-STOP triggered via serial");
+
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();
             Serial1.println("Settings saved to flash");

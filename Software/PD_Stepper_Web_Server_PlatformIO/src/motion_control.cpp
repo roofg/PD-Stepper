@@ -37,9 +37,10 @@ namespace motion {
 static volatile bool    s_running        = false; // set by planner, cleared by planner/control
 static volatile float   g_meas_pos       = 0.0f;  // written: control; read: planner
 static volatile float   g_target_pos     = 0.0f;  // written: planner; read: control (telemetry)
-static volatile bool    g_fault_lag      = false;  // set: control; cleared: planner on move start
-static volatile bool    g_fault_estop    = false;  // set: control; cleared: planner on move start
-static volatile bool    g_fault_brownout = false;  // set: planner; cleared: planner on move start
+static volatile bool    g_fault_lag        = false;  // set: control; cleared: planner on move start
+static volatile bool    g_fault_estop      = false;  // set: control; cleared: planner on move start
+static volatile bool    g_fault_estop_gui  = false;  // set: serial cmd; cleared: planner on move start
+static volatile bool    g_fault_brownout   = false;  // set: planner; cleared: planner on move start
 static volatile uint16_t g_sg_result     = 0;      // written: planner (UART); read: control (tele)
 // TMC telemetry cache — written by DiagnosticsTask (Core 0, ~1–10 Hz); read by ControlTask (Core 1).
 // uint8_t reads/writes are single-instruction atomic on ESP32 LX7.
@@ -486,7 +487,7 @@ static void PlannerTask(void *) {
         // xQueueReset here ensures TelemetryTask cannot deliver a previous run's STOP
         // packet while this run is already producing UPDATE packets.  Safe to call:
         // ControlTask does not enqueue UPDATE packets until s_running is true (set below).
-        g_fault_lag = g_fault_estop = g_fault_brownout = false;
+        g_fault_lag = g_fault_estop = g_fault_estop_gui = g_fault_brownout = false;
         xQueueReset(s_teleQueue);
         s_running   = true;
 
@@ -546,9 +547,10 @@ static void PlannerTask(void *) {
                 }
 
                 // Fault handling
-                if (g_fault_lag)      { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
-                if (g_fault_estop)    { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
-                if (g_fault_brownout) { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
+                if (g_fault_lag)          { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
+                if (g_fault_estop)        { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
+                if (g_fault_estop_gui)    { strncpy(stopReason, "E-STOP (GUI)",   31); s_running = false; }
+                if (g_fault_brownout)     { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
                 if (!s_running) break;
 
                 // Block complete: simple position crossing — no velocity window needed
@@ -569,7 +571,7 @@ static void PlannerTask(void *) {
         stepgen::halt();
         Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason);
 
-        bool faulted = g_fault_lag || g_fault_estop || g_fault_brownout;
+        bool faulted = g_fault_lag || g_fault_estop || g_fault_estop_gui || g_fault_brownout;
         if (!faulted) {
             // Normal completion — enter active hold so PD loop corrects drift
             g_hold_target = g_target_pos;
@@ -846,6 +848,8 @@ uint8_t getHoldState() { return g_hold_state; }
 
 bool isBrownoutFault() { return g_fault_brownout; }
 bool isLagFault()      { return g_fault_lag; }
-bool isEstopFault()    { return g_fault_estop; }
+bool isEstopFault()    { return g_fault_estop || g_fault_estop_gui; }
+
+void triggerEstop()    { g_fault_estop_gui = true; }
 
 } // namespace motion

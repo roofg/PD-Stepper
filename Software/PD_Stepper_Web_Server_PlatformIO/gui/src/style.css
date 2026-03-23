@@ -138,6 +138,15 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 button.connected        { background: #374151; }
 button.connected:hover  { background: var(--red); }
 
+.btn-estop {
+  background: var(--red);
+  padding: 7px 14px;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+}
+.btn-estop:hover:not(:disabled) { background: #dc2626; }
+.btn-estop:disabled { opacity: 0.35; cursor: not-allowed; }
+
 /* ── Telemetry section ──────────────────────────────────────────────────── */
 .status {
   font-size: 12px;

@@ -71,4 +71,7 @@ bool isBrownoutFault();
 bool isLagFault();
 bool isEstopFault();
 
+// Software emergency stop — equivalent to pressing SW1. Safe to call from any task.
+void triggerEstop();
+
 } // namespace motion

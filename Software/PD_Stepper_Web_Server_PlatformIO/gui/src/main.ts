@@ -11,6 +11,7 @@ const chart = new TelemetryChart();
 // ── DOM references ──────────────────────────────────────────────────────────
 
 const btnConnect      = document.getElementById('btn-connect')        as HTMLButtonElement;
+const btnEstop        = document.getElementById('btn-estop')          as HTMLButtonElement;
 const connDot         = document.getElementById('conn-dot')           as HTMLSpanElement;
 const connStatus      = document.getElementById('conn-status')        as HTMLSpanElement;
 const moveForm        = document.getElementById('move-form')          as HTMLFormElement;
@@ -208,10 +209,12 @@ conn.onConnectionChange = (connected: boolean): void => {
     settingsReceived = false;
     setControlsEnabled(false);
     setMotionStatus(false);
+    btnEstop.disabled = true;
     if (linkInterval) { clearInterval(linkInterval); linkInterval = null; }
   } else {
     setMotionEnabled(true);
     setSettingsEnabled(false);   // gated — unlocked by onSettings
+    btnEstop.disabled = false;
     movesSent = stopsReceived = 0;
     syncIndicator.classList.remove('hidden');
     linkInterval = setInterval(updateLinkStats, 1000);
@@ -233,6 +236,10 @@ btnConnect.addEventListener('click', () => {
       alert(`Connection error: ${err instanceof Error ? err.message : String(err)}`);
     })
     .finally(() => { btnConnect.disabled = false; });
+});
+
+btnEstop.addEventListener('click', () => {
+  sendCmd({ cmd: 'estop' });
 });
 
 // ── Move command ─────────────────────────────────────────────────────────────
