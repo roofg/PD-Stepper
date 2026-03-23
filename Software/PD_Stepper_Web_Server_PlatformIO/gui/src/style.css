@@ -147,6 +147,21 @@ button.connected:hover  { background: var(--red); }
 .btn-estop:hover:not(:disabled) { background: #dc2626; }
 .btn-estop:disabled { opacity: 0.35; cursor: not-allowed; }
 
+.btn-reset-chart {
+  float: right;
+  background: var(--border);
+  color: var(--text-dim);
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.btn-reset-chart:hover { background: #333; color: var(--text); }
+
 /* ── Telemetry section ──────────────────────────────────────────────────── */
 .status {
   font-size: 12px;

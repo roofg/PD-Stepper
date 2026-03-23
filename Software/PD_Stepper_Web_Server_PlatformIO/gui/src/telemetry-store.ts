@@ -92,15 +92,17 @@ export class TelemetryStore {
     this._holdPeakDev = 0;
   }
 
-  push(pkt: TelemetryUpdate): void {
+  /**
+   * Process an UPDATE packet. Always updates stats/peaks.
+   * When addToChart is true (default), also appends to chart arrays.
+   * Pass false during settled hold to freeze the graph while keeping stats live.
+   */
+  push(pkt: TelemetryUpdate, addToChart = true): void {
     if (this._startTs === null) {
       this._startTs = pkt.timestamp;
       this._pos0  = pkt.pos;   // capture baseline for relative divergence
       this._meas0 = pkt.meas;
     }
-
-    // unsigned 32-bit delta handles micros() wrap at ~71.6 min
-    const t = ((pkt.timestamp - this._startTs) >>> 0) / 1_000_000; // µs → s
 
     this._lastPkt = pkt;
     const relSkipped = Math.abs((pkt.pos - pkt.meas) - (this._pos0 - this._meas0));
@@ -111,6 +113,11 @@ export class TelemetryStore {
     }
     this._lagWindow.push(pkt.lag);
     if (this._lagWindow.length > LAG_WINDOW) this._lagWindow.shift();
+
+    if (!addToChart) return;
+
+    // unsigned 32-bit delta handles micros() wrap at ~71.6 min
+    const t = ((pkt.timestamp - this._startTs) >>> 0) / 1_000_000; // µs → s
 
     this._t.push(t);
     this._meas.push(pkt.meas);

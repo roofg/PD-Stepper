@@ -33,6 +33,7 @@ const perfMaxLag      = document.getElementById('perf-max-lag')       as HTMLSpa
 const perfLagJitter   = document.getElementById('perf-lag-jitter')    as HTMLSpanElement;
 const perfEffort      = document.getElementById('perf-effort')        as HTMLSpanElement;
 const chartContainer  = document.getElementById('chart-container')    as HTMLDivElement;
+const btnResetChart   = document.getElementById('btn-reset-chart')    as HTMLButtonElement;
 
 // Hold accuracy section
 const holdAccuracy    = document.getElementById('hold-accuracy')      as HTMLDivElement;
@@ -293,6 +294,11 @@ btnEstop.addEventListener('click', () => {
   sendCmd({ cmd: 'estop' });
 });
 
+btnResetChart.addEventListener('click', () => {
+  store.clear();
+  chart.update(store);
+});
+
 // ── Move command ─────────────────────────────────────────────────────────────
 
 moveForm.addEventListener('submit', (e: Event) => {
@@ -434,7 +440,12 @@ conn.onPacket = (packet: Packet): void => {
     teleTarget.textContent  = packet.target.toString();
     teleVel.textContent     = packet.vel.toString();
     teleLag.textContent     = packet.lag.toString();
-    store.push(packet);
+
+    // Chart accumulates during moving/correcting, freezes when settled
+    const shouldChart = motionState === 'moving' || motionState === 'correcting';
+    store.push(packet, shouldChart);
+    if (shouldChart) _chartDirty = true;
+
     const ms = store.moveStats;
     teleMaxLag.textContent  = ms.peakLag.toString();
     teleSkipped.textContent = ms.skippedSteps.toString();
