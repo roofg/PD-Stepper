@@ -198,18 +198,25 @@ public:
 private:
     // Dynamic braking lookahead that accounts for the S-curve jerk ramp.
     //
-    // When braking triggers, currentAcc must ramp from its current value down to
-    // -maxA.  This ramp takes T = (currentAcc + maxA) / jerk seconds.  During
-    // that window the motor continues at roughly constant velocity, traveling an
-    // extra ~spd*T steps beyond what a hard-decel model predicts.
+    // When braking triggers, currentAcc must ramp to the braking acceleration
+    // (-maxA for forward moves, +maxA for backward moves).  This ramp takes
+    // T = |currentAcc - brakeTarget| / jerk seconds.  During that window the
+    // motor continues at roughly constant velocity, traveling extra distance
+    // beyond what an instant-decel model predicts.
     //
     // Derivation (integrating the linear acc ramp):
     //   extra overshoot ≈ jerk * T² * (spd/(2*maxA) + T/3)
     //
     // Adding 2 steps of margin gives the motor a ≤2-step undershoot that the
     // damping zone + isComplete tolerance catch cleanly.
+    //
+    // NOTE: must handle both directions.
+    //   Forward decel: brakeTarget = -maxA; T = (currentAcc + maxA) / jerk
+    //   Backward decel: brakeTarget = +maxA; T = (maxA - currentAcc) / jerk
+    //   Unified:        T = |currentAcc - brakeTarget| / jerk
     float _brakeLookahead(float spd) const {
-        float T = (currentAcc > -maxA) ? (currentAcc + maxA) / jerk : 0.0f;
+        float brakeTarget = (currentVel >= 0.0f) ? -maxA : maxA;
+        float T = fabsf(currentAcc - brakeTarget) / jerk;
         return jerk * T * T * (spd / (2.0f * maxA) + T / 3.0f) + 2.0f;
     }
 };
@@ -757,8 +764,21 @@ static void ControlTask(void *) {
                 }
 
                 if (millis() - lastTeleMs >= holdTeleInterval) {
+                    float holdTeleDt = (millis() - lastTeleMs) / 1000.0f;
                     lastTeleMs  = millis();
+
+                    // Short-window measured velocity over the telemetry interval.
+                    // During CORRECTING this reuses lastTeleEnc from the motion path,
+                    // giving seamless velocity continuity across the transition.
+                    float holdMVel = (float)(encCounts - lastTeleEnc)
+                                     * counts_to_steps
+                                     / (holdTeleDt > 0.001f ? holdTeleDt : 0.01f);
                     lastTeleEnc = encCounts; // keep in sync (used by motion path after next move)
+
+                    // Velocity for chart: short-window measured during CORRECTING so
+                    // the deceleration tail is shown honestly; 100ms-window (holdVelEst)
+                    // during SETTLED where low noise matters more than instant accuracy.
+                    float displayVel = (g_hold_state == HOLD_CORRECTING) ? holdMVel : holdVelEst;
 
                     if (s_teleQueue) {
                         TelemetryData d;
@@ -768,13 +788,13 @@ static void ControlTask(void *) {
                         d.meas      = (long)measPos;
                         d.target    = (long)g_hold_target;
                         d.lag       = (int)(g_hold_target - measPos);
-                        d.vel       = (int)holdVelEst;  // 100 ms window → low quantization noise
+                        d.vel       = (int)displayVel;
                         d.p_acc     = 0;
                         d.p_dist    = 0;
                         d.sg_result = g_sg_result;
                         d.cs_actual = g_cs_actual_cache;
                         d.pwm_scale = g_pwm_scale_cache;
-                        d.mvel      = (int16_t)holdVelEst;
+                        d.mvel      = (int16_t)holdMVel;
                         xQueueSend(s_teleQueue, &d, 0);
                     }
 
