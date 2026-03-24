@@ -47,6 +47,9 @@ export class TelemetryStore {
 
   get length(): number { return this._t.length; }
 
+  /** Last measured position (steps). Returns 0 if no packets have been received. */
+  get lastMeas(): number { return this._lastPkt?.meas ?? 0; }
+
   get moveStats(): MoveStats {
     const pkt = this._lastPkt;
     if (!pkt) return { skippedSteps: 0, peakSkippedSteps: 0, peakLag: 0, lagJitter: 0, effortPct: 0, holdPeakDev: 0 };

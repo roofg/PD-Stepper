@@ -7,6 +7,18 @@
  *
  * Legend items are click-to-toggle. A ResizeObserver keeps chart width
  * correct when the window is resized.
+ *
+ * Zoom handling:
+ *   Box-select zoom is implemented via hooks.setSelect. When a selection is
+ *   committed, setScale('x') is called and _userZoomed is set to true. Each
+ *   subsequent setData call re-applies the zoom range so live data does not
+ *   reset the view. resetZoom() clears the state (called by btnResetChart
+ *   and at the start of a new move via seedYRange).
+ *
+ * Y-axis seeding:
+ *   seedYRange(posMin, posMax, velMax) pre-programs the Y scale range so the
+ *   chart does not thrash during the first packets of a move. The seed expands
+ *   to fit data but never shrinks. resetZoom() also clears the seed.
  */
 
 import uPlot from 'uplot';
@@ -42,6 +54,22 @@ export class TelemetryChart {
   private chart: uPlot | null = null;
   private ro:    ResizeObserver | null = null;
 
+  // ── Zoom state ────────────────────────────────────────────────────────────
+  // When _userZoomed is true, update() re-applies the saved X range after
+  // every setData call so live data cannot reset the view.
+  private _userZoomed  = false;
+  private _zoomedXMin  = 0;
+  private _zoomedXMax  = 0;
+
+  // ── Y-axis seed state ─────────────────────────────────────────────────────
+  // When _seedActive, the range functions use these as the floor/ceiling and
+  // expand (never shrink) as real data arrives. Cleared by resetZoom().
+  private _seedActive  = false;
+  private _posSeedMin  = 0;
+  private _posSeedMax  = 0;
+  private _errSeedMin  = 0;
+  private _errSeedMax  = 0;
+
   init(container: HTMLElement): void {
     const width = container.offsetWidth || 640;
 
@@ -50,8 +78,31 @@ export class TelemetryChart {
       height: CHART_HEIGHT,
       scales: {
         x:   {},
-        pos: { auto: true },
-        err: { auto: true },
+        pos: {
+          range: (_u, dataMin, dataMax) => this._posRange(dataMin, dataMax),
+        },
+        err: {
+          range: (_u, dataMin, dataMax) => this._errRange(dataMin, dataMax),
+        },
+      },
+      hooks: {
+        // uPlot draws a selection box on drag but does NOT zoom automatically.
+        // We must call setScale ourselves to implement zoom, then track state
+        // so update() can re-apply it after each setData.
+        setSelect: [
+          (u) => {
+            if (u.select.width > 0) {
+              const xMin = u.posToVal(u.select.left, 'x');
+              const xMax = u.posToVal(u.select.left + u.select.width, 'x');
+              this._userZoomed = true;
+              this._zoomedXMin = Math.min(xMin, xMax);
+              this._zoomedXMax = Math.max(xMin, xMax);
+              u.setScale('x', { min: this._zoomedXMin, max: this._zoomedXMax });
+              // Clear the selection box without re-firing this hook
+              u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+            }
+          },
+        ],
       },
       axes: [
         {
@@ -101,7 +152,49 @@ export class TelemetryChart {
   }
 
   update(store: TelemetryStore): void {
-    this.chart?.setData(store.toUplotData() as uPlot.AlignedData);
+    if (!this.chart) return;
+    this.chart.setData(store.toUplotData() as uPlot.AlignedData);
+    // setData resets all scales; restore zoom when the user has zoomed in
+    if (this._userZoomed) {
+      this.chart.setScale('x', { min: this._zoomedXMin, max: this._zoomedXMax });
+    }
+  }
+
+  /**
+   * Pre-programs the Y scale range for the upcoming move to prevent axis
+   * thrash as the first packets arrive and data accumulates from zero.
+   *
+   * The seeded range expands to fit real data but never shrinks mid-move.
+   * Also clears any existing zoom so the new move starts with a fresh view.
+   *
+   * @param posMin  Expected minimum position value (steps)
+   * @param posMax  Expected maximum position value (steps)
+   * @param velMax  Expected peak velocity (sets ±err scale range)
+   */
+  seedYRange(posMin: number, posMax: number, velMax: number): void {
+    // Guard against NaN/Infinity from invalid or empty form inputs —
+    // if any value is non-finite, skip seeding and let the chart auto-scale.
+    if (!Number.isFinite(posMin) || !Number.isFinite(posMax) || !Number.isFinite(velMax)) {
+      return;
+    }
+    // New move — clear zoom so the full trace is visible from the start
+    this._userZoomed = false;
+    this._seedActive = true;
+    this._posSeedMin = posMin;
+    this._posSeedMax = posMax === posMin ? posMin + 1 : posMax;
+    const errBound = Math.abs(velMax) * 1.2 || 1;
+    this._errSeedMin = -errBound;
+    this._errSeedMax =  errBound;
+  }
+
+  /**
+   * Reset both zoom and Y-seed back to full-auto behaviour.
+   * Call from the "Reset Chart" button handler.
+   */
+  resetZoom(): void {
+    this._userZoomed = false;
+    this._seedActive = false;
+    // The next setData call (in update()) will auto-rescale from scratch.
   }
 
   destroy(): void {
@@ -109,6 +202,47 @@ export class TelemetryChart {
     this.ro = null;
     this.chart?.destroy();
     this.chart = null;
+  }
+
+  // ── Private range helpers ─────────────────────────────────────────────────
+
+  /**
+   * Auto-range with padding, guarded against empty-data edge cases
+   * (uPlot passes Infinity/-Infinity when no data is present).
+   */
+  private _autoRange(dataMin: number, dataMax: number): [number, number] {
+    if (!Number.isFinite(dataMin) || !Number.isFinite(dataMax) || dataMin > dataMax) {
+      return [0, 1];
+    }
+    if (dataMin === dataMax) {
+      const pad = Math.abs(dataMin) * 0.1 + 1;
+      return [dataMin - pad, dataMax + pad];
+    }
+    const pad = (dataMax - dataMin) * 0.1;
+    return [dataMin - pad, dataMax + pad];
+  }
+
+  private _posRange(dataMin: number, dataMax: number): [number, number] {
+    if (!this._seedActive) return this._autoRange(dataMin, dataMax);
+    let lo = this._posSeedMin;
+    let hi = this._posSeedMax;
+    if (Number.isFinite(dataMin)) lo = Math.min(lo, dataMin);
+    if (Number.isFinite(dataMax)) hi = Math.max(hi, dataMax);
+    // Expand never-shrink: commit expanded extremes back to the seed
+    this._posSeedMin = lo;
+    this._posSeedMax = hi;
+    return lo === hi ? [lo - 1, hi + 1] : [lo, hi];
+  }
+
+  private _errRange(dataMin: number, dataMax: number): [number, number] {
+    if (!this._seedActive) return this._autoRange(dataMin, dataMax);
+    let lo = this._errSeedMin;
+    let hi = this._errSeedMax;
+    if (Number.isFinite(dataMin)) lo = Math.min(lo, dataMin);
+    if (Number.isFinite(dataMax)) hi = Math.max(hi, dataMax);
+    this._errSeedMin = lo;
+    this._errSeedMax = hi;
+    return lo === hi ? [lo - 1, hi + 1] : [lo, hi];
   }
 
   private _bindLegendToggle(): void {

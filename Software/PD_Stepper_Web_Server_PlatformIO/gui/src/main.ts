@@ -322,6 +322,7 @@ btnEstop.addEventListener('click', () => {
 
 btnResetChart.addEventListener('click', () => {
   store.clear();
+  chart.resetZoom();   // clear zoom + Y seed → full auto
   chart.update(store);
 });
 
@@ -331,12 +332,28 @@ moveForm.addEventListener('submit', (e: Event) => {
   e.preventDefault();
   resetPerfAndHold();
   setMotionState('moving');
+
+  // Capture last known position BEFORE clearing the store
+  const currentMeas = store.lastMeas;
   store.clear();
+
+  // Seed Y ranges so the chart starts in the right ballpark rather than
+  // thrashing as data accumulates from zero.
+  const distance = parseInt(inpDistance.value, 10);
+  const speed    = parseFloat(inpSpeed.value);
+  const finalPos = chkAbs.checked ? distance : (currentMeas + distance);
+  const padding  = Math.abs(finalPos - currentMeas) * 0.1 + 10;
+  chart.seedYRange(
+    Math.min(currentMeas, finalPos) - padding,
+    Math.max(currentMeas, finalPos) + padding,
+    speed,
+  );
+
   chart.update(store);
   movesSent++;
   const cmd = moveCommand(
-    parseInt(inpDistance.value, 10),
-    parseFloat(inpSpeed.value),
+    distance,
+    speed,
     parseFloat(inpAccel.value),
     chkAbs.checked,
   );
