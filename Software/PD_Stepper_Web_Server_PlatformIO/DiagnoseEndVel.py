@@ -22,6 +22,14 @@ STOP_FMT  = "<i32s"
 STALE_S   = 0.040
 TAIL_ROWS = 20
 
+# Encoder-count conversion constants (AS5600: 4096 counts/rev)
+COUNTS_PER_REV  = 4096
+DEG_PER_COUNT   = 360.0 / COUNTS_PER_REV
+RPM_PER_CPS     = 60.0 / COUNTS_PER_REV
+
+def enc_to_deg(counts): return counts * DEG_PER_COUNT
+def enc_per_sec_to_rpm(cps): return cps * RPM_PER_CPS
+
 def send_move(ser, distance, speed=12000, accel=9000, absolute=False):
     cmd = {"cmd":"move","distance":distance,"speed":speed,"accel":accel,"abs":absolute,"chain":False}
     ser.write((json.dumps(cmd)+"\n").encode())
@@ -92,7 +100,7 @@ def wait_move(ser, move_num, timeout=30.0):
 def print_move_summary(move_num, packets, final_pos, reason, elapsed):
     n = len(packets)
     print(f"\n{'='*72}")
-    print(f"MOVE {move_num}  pkts={n}  final_pos={final_pos}  "
+    print(f"MOVE {move_num}  pkts={n}  final_pos={enc_to_deg(final_pos):.1f}°  "
           f"reason={reason}  duration={elapsed:.3f}s")
 
     if not packets:
@@ -103,19 +111,19 @@ def print_move_summary(move_num, packets, final_pos, reason, elapsed):
     stop_gap  = elapsed - last_wall
     v_last    = packets[-1]["vel"]
     print(f"  last_pkt @ {last_wall*1000:.0f}ms  STOP @ {elapsed*1000:.0f}ms  "
-          f"gap={stop_gap*1000:.0f}ms  last_vel={v_last}  last_mvel={packets[-1]['mvel']}")
+          f"gap={stop_gap*1000:.0f}ms  last_vel={enc_per_sec_to_rpm(v_last):.1f}RPM  last_mvel={enc_per_sec_to_rpm(packets[-1]['mvel']):.1f}RPM")
 
     tail = packets[max(0, n-TAIL_ROWS):]
-    print(f"\n  {'#':>4}  {'wall_ms':>8}  {'fw_ms':>8}  {'vel':>7}  {'mvel':>7}  "
-          f"{'lag':>6}  {'dist':>7}")
-    print(f"  {'-'*4}  {'-'*8}  {'-'*8}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*7}")
+    print(f"\n  {'#':>4}  {'wall_ms':>8}  {'fw_ms':>8}  {'RPM':>7}  {'mRPM':>7}  "
+          f"{'lag°':>7}  {'dist°':>7}")
+    print(f"  {'-'*4}  {'-'*8}  {'-'*8}  {'-'*7}  {'-'*7}  {'-'*7}  {'-'*7}")
     t0_fw = packets[0]["ts"]
     for i, p in enumerate(tail):
         idx    = n - len(tail) + i
         fw_ms  = ((p["ts"] - t0_fw) & 0xFFFFFFFF) / 1000.0
         marker = " <<<LAST" if idx == n-1 else ""
         print(f"  {idx:>4}  {p['wall']*1000:>8.1f}  {fw_ms:>8.1f}  "
-              f"{p['vel']:>7}  {p['mvel']:>7}  {p['lag']:>6}  {p['dist']:>7}{marker}")
+              f"{enc_per_sec_to_rpm(p['vel']):>7.1f}  {enc_per_sec_to_rpm(p['mvel']):>7.1f}  {enc_to_deg(p['lag']):>7.2f}  {enc_to_deg(p['dist']):>7.1f}{marker}")
 
     if n > 1:
         gaps    = [((packets[i+1]["ts"] - packets[i]["ts"]) & 0xFFFFFFFF) / 1000.0

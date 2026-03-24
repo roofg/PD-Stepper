@@ -34,16 +34,16 @@ interface SeriesDef {
 // Order matches TelemetryStore.toUplotData() — do not reorder without
 // updating both files.
 const SERIES_DEFS: SeriesDef[] = [
-  { label: 'Measured',    stroke: '#22c55e', scale: 'pos'               },
-  { label: 'Target',      stroke: '#3b82f6', scale: 'pos'               },
-  { label: 'Lag',         stroke: '#eab308', scale: 'err'               },
-  { label: 'Velocity',    stroke: '#a855f7', scale: 'err'               },
-  { label: 'Accel',       stroke: '#f97316', scale: 'err', show: false  },
-  { label: 'Pos (pulse)', stroke: '#6b7280', scale: 'pos', show: false  },
-  { label: 'Dist Left',   stroke: '#ec4899', scale: 'pos', show: false  },
-  { label: 'StallGuard',  stroke: '#ef4444', scale: 'err', show: false  },
-  { label: 'CS Actual',   stroke: '#06b6d4', scale: 'err', show: false  },
-  { label: 'PWM Scale',   stroke: '#d946ef', scale: 'err', show: false  },
+  { label: 'Measured (enc)',  stroke: '#22c55e', scale: 'pos'               },
+  { label: 'Target (enc)',    stroke: '#3b82f6', scale: 'pos'               },
+  { label: 'Lag (enc)',       stroke: '#eab308', scale: 'err'               },
+  { label: 'Velocity (enc/s)', stroke: '#a855f7', scale: 'err'             },
+  { label: 'Accel (enc/s²)', stroke: '#f97316', scale: 'err', show: false  },
+  { label: 'Pos pulse (enc)', stroke: '#6b7280', scale: 'pos', show: false },
+  { label: 'Dist Left (enc)', stroke: '#ec4899', scale: 'pos', show: false },
+  { label: 'StallGuard',     stroke: '#ef4444', scale: 'err', show: false  },
+  { label: 'CS Actual',      stroke: '#06b6d4', scale: 'err', show: false  },
+  { label: 'PWM Scale',      stroke: '#d946ef', scale: 'err', show: false  },
 ];
 
 const GRID_STROKE  = '#2a2a2a';

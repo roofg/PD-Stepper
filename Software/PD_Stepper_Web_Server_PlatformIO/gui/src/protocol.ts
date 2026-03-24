@@ -1,8 +1,11 @@
 /**
  * Binary protocol parser for PD-Stepper USB CDC telemetry.
  *
+ * All position/velocity/acceleration values are in ENCODER COUNTS
+ * (AS5600: 4096 counts per motor revolution, independent of microstepping).
+ *
  * Wire format (little-endian):
- *   UPDATE   0xAA 0xBB  33 bytes total  (mvel added at offset 30; checksum at 32)
+ *   UPDATE   0xAA 0xBB  33 bytes total  (mvel at offset 30; checksum at 32)
  *   STOP     0xAA 0xCC  38 bytes total
  *   SETTINGS 0xAA 0xEE  21 bytes total
  *   STATUS   0xAA 0xDD  20 bytes total
@@ -22,22 +25,22 @@ const STATUS_LEN   = 20;
 export interface TelemetryUpdate {
   type: 'update';
   timestamp: number;   // uint32, µs
-  pos:       number;   // int32, pulse-counted steps
-  meas:      number;   // int32, encoder-derived steps
-  target:    number;   // int32, planner reference steps
-  lag:       number;   // int16, target - meas
-  vel:       number;   // int16, steps/s
-  accel:     number;   // int16, steps/s²
-  dist:      number;   // int16, remaining steps
+  pos:       number;   // int32, encoder counts (pulse-counted)
+  meas:      number;   // int32, raw encoder counts
+  target:    number;   // int32, encoder counts (planner reference)
+  lag:       number;   // int16, encoder counts (target - meas)
+  vel:       number;   // int16, encoder counts/s
+  accel:     number;   // int16, encoder counts/s²
+  dist:      number;   // int16, encoder counts remaining
   stallguard: number;  // uint16, TMC2209 StallGuard result
   csActual:  number;   // uint8,  TMC current scale 0–31
   pwmScale:  number;   // uint8,  TMC PWM duty 0–255
-  mvel:      number;   // int16,  measured encoder velocity (steps/s)
+  mvel:      number;   // int16,  measured encoder velocity (encoder counts/s)
 }
 
 export interface StopPacket {
   type:   'stop';
-  pos:    number;  // int32, final position
+  pos:    number;  // int32, final position in encoder counts
   reason: string;  // up to 32-char ASCII
 }
 

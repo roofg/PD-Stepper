@@ -23,6 +23,14 @@ STOP_PACKET_LEN = 38
 TELE_FMT        = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT        = "<i32s"
 
+# Encoder-count conversion constants (AS5600: 4096 counts/rev)
+COUNTS_PER_REV  = 4096
+DEG_PER_COUNT   = 360.0 / COUNTS_PER_REV
+RPM_PER_CPS     = 60.0 / COUNTS_PER_REV
+
+def enc_to_deg(counts): return counts * DEG_PER_COUNT
+def enc_per_sec_to_rpm(cps): return cps * RPM_PER_CPS
+
 # The firmware enforces a 50 ms settle delay before it can send any STOP packet.
 # A STOP arriving sooner than this is a stale packet left in the OS serial buffer
 # from a previous run.  40 ms is safely below the firmware minimum (~50 ms) while
@@ -39,8 +47,8 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
     buf   = bytearray()
     start = time.time()
 
-    print(f"  {'Time':>6}  {'Target':>8}  {'Measured':>9}  {'Lag':>6}  {'Vel':>7}")
-    print(f"  {'-'*6}  {'-'*8}  {'-'*9}  {'-'*6}  {'-'*7}")
+    print(f"  {'Time':>6}  {'Target°':>8}  {'Meas°':>9}  {'Lag°':>7}  {'RPM':>7}")
+    print(f"  {'-'*6}  {'-'*8}  {'-'*9}  {'-'*7}  {'-'*7}")
 
     # Accumulate a text line buffer for firmware debug prints (DBG:... lines)
     text_line = bytearray()
@@ -78,7 +86,7 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
                     fields = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
                     ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, _cs, _pwm, _mvel = fields
                     t_sec = ts / 1000.0
-                    print(f"  {t_sec:6.2f}  {target:>8}  {meas:>9}  {lag:>6}  {vel:>7}")
+                    print(f"  {t_sec:6.2f}  {enc_to_deg(target):>8.1f}  {enc_to_deg(meas):>9.1f}  {enc_to_deg(lag):>7.2f}  {enc_per_sec_to_rpm(vel):>7.1f}")
                 buf = buf[TELE_PACKET_LEN:]
 
             elif buf[1] == STOP_HEADER[1]:
@@ -95,7 +103,7 @@ def wait_for_completion(ser: serial.Serial, timeout: float = 30.0):
                 final_pos, reason_b = struct.unpack(STOP_FMT, bytes(pkt[2:]))
                 reason = reason_b.rstrip(b"\x00").decode("ascii", errors="replace")
                 duration = time.time() - start
-                print(f"\nMove complete in {duration:.2f}s — final pos: {final_pos}  reason: {reason}")
+                print(f"\nMove complete in {duration:.2f}s — final pos: {enc_to_deg(final_pos):.1f}°  reason: {reason}")
                 return True
             else:
                 buf = buf[1:]

@@ -10,6 +10,14 @@ TELE_PACKET_LEN  = 33
 STOP_PACKET_LEN  = 38
 TELE_FMT         = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT         = "<i32s"       # int32, char[32]
+
+# Encoder-count conversion constants (AS5600: 4096 counts/rev)
+COUNTS_PER_REV   = 4096
+DEG_PER_COUNT    = 360.0 / COUNTS_PER_REV
+RPM_PER_CPS      = 60.0 / COUNTS_PER_REV
+
+def enc_to_deg(counts): return counts * DEG_PER_COUNT
+def enc_per_sec_to_rpm(cps): return cps * RPM_PER_CPS
 def move(ser: serial.Serial):
     # Move 1: Relative movement (1 full rotation at 32 microsteps)
     cmd1 = {"cmd": "move", "distance": 25600, "accel": 7000, "speed": 9000}
@@ -39,7 +47,7 @@ def move(ser: serial.Serial):
                         fields = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
                         ts, pos, meas, target, lag, vel, p_acc, p_dist, sg_result, _cs, _pwm, _mvel = fields
                         time_s = ts / 1000000.0
-                        print(f"[{time_s:7.2f}s] P:{pos:6} M:{meas:6} T:{target:6} L:{lag:4} V:{vel:5} SG:{sg_result:4}")
+                        print(f"[{time_s:7.2f}s] P:{enc_to_deg(pos):7.1f}° M:{enc_to_deg(meas):7.1f}° T:{enc_to_deg(target):7.1f}° L:{enc_to_deg(lag):5.2f}° V:{enc_per_sec_to_rpm(vel):6.1f}RPM SG:{sg_result:4}")
                     
                     buf = buf[TELE_PACKET_LEN:]
                     
@@ -49,7 +57,7 @@ def move(ser: serial.Serial):
                     pos, reason_b = struct.unpack(STOP_FMT, bytes(pkt[2:]))
                     reason = reason_b.rstrip(b'\x00').decode("ascii", errors="replace")
                     
-                    print(f"\nSTOPPED: {reason} at Pos: {pos}")
+                    print(f"\nSTOPPED: {reason} at Pos: {enc_to_deg(pos):.1f}°")
                     if reason == "Lag Fault":
                         print("DEBUG: 'Lag Fault' means the motor could not keep up with the trajectory.")
                         print("       Check for mechanical binding, insufficient current, or too high acceleration/speed.")

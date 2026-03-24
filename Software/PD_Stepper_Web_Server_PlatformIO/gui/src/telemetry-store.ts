@@ -2,23 +2,32 @@
  * Ring-buffer for one move's telemetry data, stored in uPlot-native
  * parallel-array format (index 0 = x/time, indices 1–8 = metrics).
  *
+ * All position/velocity values are in encoder counts (4096/rev),
+ * independent of the microstep setting.
+ *
  * Arrays grow during the move and are capped at MAX_POINTS to bound
  * memory. clear() is called when a new move starts.
  */
 
 import type { TelemetryUpdate } from './protocol';
+import { encToDeg } from './units';
 
 const MAX_POINTS = 12000; // ~2 min at 100 Hz
 const LAG_WINDOW = 20;   // samples for rolling jitter stdev
 
 /** Per-move derived metrics, computed client-side from the UPDATE stream. */
 export interface MoveStats {
-  skippedSteps:     number;  // (pos−pos₀) − (meas−meas₀): divergence relative to move start
-  peakSkippedSteps: number;  // max |relative divergence| over the move
-  peakLag:          number;  // max |lag| over the move (steps)
-  lagJitter:        number;  // rolling σ of last N lag samples (steps)
-  effortPct:        number;  // |lag| / max(|vel|, 1) × 100 — PD working hard?
-  holdPeakDev:      number;  // max |lag| during hold phase (after STOP)
+  skippedCounts:     number;  // (pos−pos₀) − (meas−meas₀): divergence (encoder counts)
+  peakSkippedCounts: number;  // max |relative divergence| over the move (encoder counts)
+  peakLagCounts:     number;  // max |lag| over the move (encoder counts)
+  lagJitter:         number;  // rolling σ of last N lag samples (encoder counts)
+  effortPct:         number;  // |lag| / max(|vel|, 1) × 100 — PD working hard?
+  holdPeakDevCounts: number;  // max |lag| during hold phase (encoder counts)
+  // Degree-converted accessors
+  peakLagDeg:        number;
+  holdPeakDevDeg:    number;
+  lagJitterDeg:      number;
+  skippedDeg:        number;
 }
 
 export class TelemetryStore {
@@ -39,28 +48,37 @@ export class TelemetryStore {
   private _pos0 = 0;   // pos at first packet — baseline for relative divergence
   private _meas0 = 0;  // meas at first packet
   private _lastPkt: TelemetryUpdate | null = null;
-  private _peakSkippedSteps = 0;
-  private _peakLag = 0;
+  private _peakSkippedCounts = 0;
+  private _peakLagCounts = 0;
   private _lagWindow: number[] = [];
   private _holdPhase = false;
-  private _holdPeakDev = 0;
+  private _holdPeakDevCounts = 0;
 
   get length(): number { return this._t.length; }
 
-  /** Last measured position (steps). Returns 0 if no packets have been received. */
+  /** Last measured position (encoder counts). Returns 0 if no packets have been received. */
   get lastMeas(): number { return this._lastPkt?.meas ?? 0; }
 
   get moveStats(): MoveStats {
     const pkt = this._lastPkt;
-    if (!pkt) return { skippedSteps: 0, peakSkippedSteps: 0, peakLag: 0, lagJitter: 0, effortPct: 0, holdPeakDev: 0 };
-    const skippedSteps = (pkt.pos - pkt.meas) - (this._pos0 - this._meas0);
+    if (!pkt) return {
+      skippedCounts: 0, peakSkippedCounts: 0, peakLagCounts: 0,
+      lagJitter: 0, effortPct: 0, holdPeakDevCounts: 0,
+      peakLagDeg: 0, holdPeakDevDeg: 0, lagJitterDeg: 0, skippedDeg: 0,
+    };
+    const skippedCounts = (pkt.pos - pkt.meas) - (this._pos0 - this._meas0);
+    const jitter = this._lagJitter();
     return {
-      skippedSteps,
-      peakSkippedSteps: this._peakSkippedSteps,
-      peakLag:          this._peakLag,
-      lagJitter:        this._lagJitter(),
-      effortPct:        Math.abs(pkt.lag) / Math.max(Math.abs(pkt.vel), 1) * 100,
-      holdPeakDev:      this._holdPeakDev,
+      skippedCounts,
+      peakSkippedCounts: this._peakSkippedCounts,
+      peakLagCounts:     this._peakLagCounts,
+      lagJitter:         jitter,
+      effortPct:         Math.abs(pkt.lag) / Math.max(Math.abs(pkt.vel), 1) * 100,
+      holdPeakDevCounts: this._holdPeakDevCounts,
+      peakLagDeg:        encToDeg(this._peakLagCounts),
+      holdPeakDevDeg:    encToDeg(this._holdPeakDevCounts),
+      lagJitterDeg:      encToDeg(jitter),
+      skippedDeg:        encToDeg(Math.abs(skippedCounts)),
     };
   }
 
@@ -78,12 +96,12 @@ export class TelemetryStore {
     this._pos0 = 0;
     this._meas0 = 0;
     this._lastPkt = null;
-    this._peakSkippedSteps = 0;
-    this._peakLag = 0;
+    this._peakSkippedCounts = 0;
+    this._peakLagCounts = 0;
     this._lagWindow = [];
     this._holdPhase = false;
-    this._holdPeakDev = 0;
-    this._t.length = this._meas.length = this._target.length =
+    this._holdPeakDevCounts = 0;
+    this._t.length= this._meas.length = this._target.length =
     this._lag.length = this._vel.length = this._accel.length =
     this._pos.length = this._dist.length = this._stallguard.length =
     this._csActual.length = this._pwmScale.length = 0;
@@ -92,7 +110,7 @@ export class TelemetryStore {
   /** Mark the start of hold phase — peak deviation tracking begins. */
   enterHoldPhase(): void {
     this._holdPhase = true;
-    this._holdPeakDev = 0;
+    this._holdPeakDevCounts = 0;
   }
 
   /**
@@ -109,10 +127,10 @@ export class TelemetryStore {
 
     this._lastPkt = pkt;
     const relSkipped = Math.abs((pkt.pos - pkt.meas) - (this._pos0 - this._meas0));
-    if (relSkipped > this._peakSkippedSteps) this._peakSkippedSteps = relSkipped;
-    if (Math.abs(pkt.lag) > this._peakLag) this._peakLag = Math.abs(pkt.lag);
-    if (this._holdPhase && Math.abs(pkt.lag) > this._holdPeakDev) {
-      this._holdPeakDev = Math.abs(pkt.lag);
+    if (relSkipped > this._peakSkippedCounts) this._peakSkippedCounts = relSkipped;
+    if (Math.abs(pkt.lag) > this._peakLagCounts) this._peakLagCounts = Math.abs(pkt.lag);
+    if (this._holdPhase && Math.abs(pkt.lag) > this._holdPeakDevCounts) {
+      this._holdPeakDevCounts = Math.abs(pkt.lag);
     }
     this._lagWindow.push(pkt.lag);
     if (this._lagWindow.length > LAG_WINDOW) this._lagWindow.shift();

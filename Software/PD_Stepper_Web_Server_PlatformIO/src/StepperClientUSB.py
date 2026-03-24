@@ -30,6 +30,14 @@ STOP_PACKET_LEN  = 38
 TELE_FMT         = "<IiiihhhhHBBh"  # ts, pos, meas, target, lag, vel, p_acc, p_dist, sg, cs, pwm, mvel
 STOP_FMT         = "<i32s"       # int32, char[32]
 
+# Encoder-count conversion constants (AS5600: 4096 counts/rev)
+COUNTS_PER_REV   = 4096
+DEG_PER_COUNT    = 360.0 / COUNTS_PER_REV
+RPM_PER_CPS      = 60.0 / COUNTS_PER_REV
+
+def enc_to_deg(counts): return counts * DEG_PER_COUNT
+def enc_per_sec_to_rpm(cps): return cps * RPM_PER_CPS
+
 stop_event = threading.Event()
 
 def serial_reader(ser: serial.Serial):
@@ -59,7 +67,7 @@ def serial_reader(ser: serial.Serial):
                     fields = struct.unpack(TELE_FMT, bytes(pkt[2:32]))
                     ts, pos, meas, target, lag, vel, p_acc, p_dist, sg_result, _cs, _pwm, _mvel = fields
                     # (Optional: print if needed, but keeping it light for performance)
-                    print(f"[{ts/1e6:8.3f}s] P:{pos:7} M:{meas:7} T:{target:7} L:{lag:4} V:{vel:5} A:{p_acc:5} Rem:{p_dist:6} SG:{sg_result:4}")
+                    print(f"[{ts/1e6:8.3f}s] P:{enc_to_deg(pos):7.1f}° M:{enc_to_deg(meas):7.1f}° T:{enc_to_deg(target):7.1f}° L:{enc_to_deg(lag):5.2f}° V:{enc_per_sec_to_rpm(vel):6.1f}RPM A:{p_acc:5} Rem:{enc_to_deg(p_dist):6.1f}° SG:{sg_result:4}")
                 
                 buf = buf[TELE_PACKET_LEN:]
                 
@@ -68,7 +76,7 @@ def serial_reader(ser: serial.Serial):
                 pkt = buf[:STOP_PACKET_LEN]
                 pos, reason_b = struct.unpack(STOP_FMT, bytes(pkt[2:]))
                 reason = reason_b.rstrip(b'\x00').decode("ascii", errors="replace")
-                print(f"\n[USB] *** STOPPED *** reason='{reason}' final_pos={pos}")
+                print(f"\n[USB] *** STOPPED *** reason='{reason}' final_pos={enc_to_deg(pos):.1f}°")
                 buf = buf[STOP_PACKET_LEN:]
                 stop_event.set()
                 return

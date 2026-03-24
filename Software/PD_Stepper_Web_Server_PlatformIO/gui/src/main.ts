@@ -3,6 +3,7 @@ import { SerialConnection } from './serial';
 import { moveCommand, type Packet, type SettingsPacket, type StatusPacket } from './protocol';
 import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
+import { encToDeg, encToRev, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec } from './units';
 
 const conn  = new SerialConnection();
 const store = new TelemetryStore();
@@ -101,6 +102,7 @@ const fbHoldSettled = document.getElementById('fb-hold-settled') as HTMLSpanElem
 let movesSent     = 0;
 let stopsReceived = 0;
 let settingsReceived = false;
+let currentMicrosteps = 32;  // from SETTINGS packet, used for deg→µstep command conversion
 let linkInterval: ReturnType<typeof setInterval> | null = null;
 
 // Chart rendering is decoupled from packet arrival via requestAnimationFrame.
@@ -186,8 +188,8 @@ function setMotionState(state: MotionState): void {
   teleStatus.className   = `status ${state}`;
 }
 
-// Gauge range: ±DEV_RANGE steps maps to full width
-const DEV_RANGE = 20;
+// Gauge range: ±DEV_RANGE degrees maps to full width
+const DEV_RANGE = encToDeg(20);  // ~1.76°
 
 /** Reset Move Performance and Hold Accuracy to dimmed placeholders */
 function resetPerfAndHold(): void {
@@ -209,19 +211,20 @@ function resetPerfAndHold(): void {
 resetPerfAndHold();
 
 function updateDeviationGauge(lag: number): void {
+  const lagDeg = encToDeg(lag);
   // Needle position: 50% = center, clamp to [2%, 98%]
-  const pct = Math.max(2, Math.min(98, 50 + (lag / DEV_RANGE) * 50));
+  const pct = Math.max(2, Math.min(98, 50 + (lagDeg / DEV_RANGE) * 50));
   devNeedle.style.left = `${pct}%`;
 
-  // Colour class based on magnitude
+  // Colour class based on magnitude (in encoder counts)
   const absLag = Math.abs(lag);
   let cls: string;
   if (absLag <= 6)       cls = 'dev-green';
   else if (absLag <= 12) cls = 'dev-amber';
   else                   cls = 'dev-red';
 
-  const sign = lag >= 0 ? '+' : '';
-  holdDev.textContent = `${sign}${lag} steps`;
+  const sign = lagDeg >= 0 ? '+' : '';
+  holdDev.textContent = `${sign}${lagDeg.toFixed(2)}°`;
   holdDev.className   = `metric-value dev-value ${cls}`;
 }
 
@@ -333,28 +336,34 @@ moveForm.addEventListener('submit', (e: Event) => {
   resetPerfAndHold();
   setMotionState('moving');
 
-  // Capture last known position BEFORE clearing the store
+  // Capture last known position (encoder counts) BEFORE clearing the store
   const currentMeas = store.lastMeas;
   store.clear();
 
-  // Seed Y ranges so the chart starts in the right ballpark rather than
-  // thrashing as data accumulates from zero.
-  const distance = parseInt(inpDistance.value, 10);
-  const speed    = parseFloat(inpSpeed.value);
-  const finalPos = chkAbs.checked ? distance : (currentMeas + distance);
+  // User inputs are in degrees / RPM / °/s²
+  const distDeg  = parseFloat(inpDistance.value);
+  const speedRPM = parseFloat(inpSpeed.value);
+  const accelDPS = parseFloat(inpAccel.value);
+
+  // Convert to encoder counts for chart seeding
+  const distEnc  = degToEnc(distDeg);
+  const finalPos = chkAbs.checked ? distEnc : (currentMeas + distEnc);
+  const speedEnc = rpmToStepsPerSec(speedRPM, currentMicrosteps) / (200 * currentMicrosteps / 4096);
   const padding  = Math.abs(finalPos - currentMeas) * 0.1 + 10;
   chart.seedYRange(
     Math.min(currentMeas, finalPos) - padding,
     Math.max(currentMeas, finalPos) + padding,
-    speed,
+    speedEnc,
   );
 
   chart.update(store);
   movesSent++;
+
+  // Convert to microsteps for the firmware JSON command
   const cmd = moveCommand(
-    distance,
-    speed,
-    parseFloat(inpAccel.value),
+    degToMicrosteps(distDeg, currentMicrosteps),
+    rpmToStepsPerSec(speedRPM, currentMicrosteps),
+    degPerSec2ToStepsPerSec2(accelDPS, currentMicrosteps),
     chkAbs.checked,
   );
   conn.write(cmd).catch((err: unknown) => {
@@ -388,7 +397,7 @@ btnApplyTmc.addEventListener('click', () => {
   sendCmd({ cmd: 'set_stall_threshold',value: parseInt(setStall.value, 10) });
   sendCmd({ cmd: 'set_standstill_mode',value: setStandstill.value });
   sendCmd({ cmd: 'set_stealthchop',    value: setStealthchop.checked ? 1 : 0 });
-  sendCmd({ cmd: 'set_spread_cycle_speed', value: setSpreadEnable.checked ? parseInt(setSpreadSpeed.value, 10) : 0 });
+  sendCmd({ cmd: 'set_spread_cycle_speed', value: setSpreadEnable.checked ? Math.round(rpmToMicrostepsPerSec(parseFloat(setSpreadSpeed.value), currentMicrosteps)) : 0 });
   sendCmd({ cmd: 'set_coolstep',       value: setCoolstep.checked ? 1 : 0 });
 });
 
@@ -399,6 +408,7 @@ const standstillModes = ['NORMAL', 'FREEWHEELING', 'BRAKING', 'STRONG_BRAKING'];
 conn.onSettings = (pkt: SettingsPacket): void => {
   syncIndicator.classList.add('hidden');
   settingsReceived = true;
+  currentMicrosteps = pkt.microsteps || 32;
   setSettingsEnabled(true);   // unlock now that values are known
 
   setVoltage.value     = pkt.voltage.toString();
@@ -410,7 +420,11 @@ conn.onSettings = (pkt: SettingsPacket): void => {
   setStandstill.value  = standstillModes[pkt.standstillMode] ?? 'NORMAL';
   setStealthchop.checked = pkt.stealthchop;
   setSpreadEnable.checked = pkt.spreadCycleSpeed > 0;
-  setSpreadSpeed.value   = pkt.spreadCycleSpeed > 0 ? pkt.spreadCycleSpeed.toString() : '5000';
+  // SpreadCycle threshold: firmware stores in steps/s, display as RPM
+  const spreadRPM = pkt.spreadCycleSpeed > 0
+    ? stepsPerSecToRPM(pkt.spreadCycleSpeed, currentMicrosteps)
+    : 50;
+  setSpreadSpeed.value   = spreadRPM.toFixed(0);
   setSpreadSpeed.disabled = !pkt.spreadCycleSpeed;
   setCoolstep.checked    = pkt.coolstep;
 
@@ -483,10 +497,13 @@ conn.onStatus = (pkt: StatusPacket): void => {
 
 conn.onPacket = (packet: Packet): void => {
   if (packet.type === 'update') {
-    teleMeas.textContent    = packet.meas.toString();
-    teleTarget.textContent  = packet.target.toString();
-    teleVel.textContent     = packet.vel.toString();
-    teleLag.textContent     = packet.lag.toString();
+    // Display in degrees / RPM (encoder-count-independent units)
+    const measDeg = encToDeg(packet.meas);
+    const measRev = encToRev(packet.meas);
+    teleMeas.textContent    = `${measDeg.toFixed(1)}° (${measRev.toFixed(2)} rev)`;
+    teleTarget.textContent  = `${encToDeg(packet.target).toFixed(1)}°`;
+    teleVel.textContent     = `${encPerSecToRPM(packet.vel).toFixed(1)} RPM`;
+    teleLag.textContent     = `${encToDeg(packet.lag).toFixed(2)}°`;
 
     // Chart accumulates during moving/correcting, freezes when settled
     const shouldChart = motionState === 'moving' || motionState === 'correcting';
@@ -494,18 +511,18 @@ conn.onPacket = (packet: Packet): void => {
     if (shouldChart) _chartDirty = true;
 
     const ms = store.moveStats;
-    teleMaxLag.textContent  = ms.peakLag.toString();
-    teleSkipped.textContent = ms.skippedSteps.toString();
+    teleMaxLag.textContent  = `${ms.peakLagDeg.toFixed(2)}°`;
+    teleSkipped.textContent = `${ms.skippedDeg.toFixed(2)}°`;
     _chartDirty = true;
 
     // Update hold accuracy gauge if in hold phase
     if (motionState === 'correcting' || motionState === 'holding') {
       updateDeviationGauge(packet.lag);
-      holdPeakDev.textContent = `${ms.holdPeakDev} steps`;
+      holdPeakDev.textContent = `${ms.holdPeakDevDeg.toFixed(2)}°`;
     }
   } else {
     stopsReceived++;
-    teleMeas.textContent = packet.pos.toString();
+    teleMeas.textContent = `${encToDeg(packet.pos).toFixed(1)}°`;
 
     // Enter hold phase for deviation tracking
     const isNormalStop = !packet.reason.includes('Fault') && !packet.reason.includes('E-STOP');
@@ -525,8 +542,8 @@ conn.onPacket = (packet: Packet): void => {
 
     // Populate per-move performance panel (undim values)
     const ms = store.moveStats;
-    perfMaxLag.textContent    = `${ms.peakLag} steps`;
-    perfLagJitter.textContent = `${ms.lagJitter.toFixed(1)} steps`;
+    perfMaxLag.textContent    = `${ms.peakLagDeg.toFixed(2)}°`;
+    perfLagJitter.textContent = `${ms.lagJitterDeg.toFixed(2)}°`;
     perfEffort.textContent    = `${ms.effortPct.toFixed(1)}%`;
     perfMaxLag.classList.remove('dimmed');
     perfLagJitter.classList.remove('dimmed');

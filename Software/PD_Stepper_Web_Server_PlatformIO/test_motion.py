@@ -36,11 +36,12 @@ STOP_FMT        = "<i32s"        # STOP payload layout
 
 # ---------------------------------------------------------------------------
 # Tolerances — tune as the controller improves
+# All thresholds in encoder counts (4096 counts/rev, µstep-independent)
 # ---------------------------------------------------------------------------
 
-POS_TOLERANCE   = 20     # µsteps: max |final_pos − expected| (PD overshoot ≈ 12)
-LAG_THRESHOLD   = 50     # µsteps: max |lag| during motion
-DRIFT_TOLERANCE = 10     # µsteps: max drift during hold (≥ 4 encoder counts)
+POS_TOLERANCE   = 20     # enc counts: max |final_pos − expected| (PD overshoot ≈ 12)
+LAG_THRESHOLD   = 50     # enc counts: max |lag| during motion
+DRIFT_TOLERANCE = 10     # enc counts: max drift during hold (≥ 4 encoder counts)
 HOLD_WAIT_SEC   = 5.0    # seconds to hold before checking drift
 INTER_TEST_SEC  = 2.0    # seconds between tests for motor to settle
 

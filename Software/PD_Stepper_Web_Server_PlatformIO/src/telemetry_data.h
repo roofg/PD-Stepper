@@ -9,17 +9,17 @@ struct TelemetryData {
   TelemetryType type;
   char stopReason[32];
   unsigned long timestamp;
-  long pos;
-  long meas;
-  long target;
-  int lag;
-  int vel;
-  int p_acc;
-  int p_dist;
+  long pos;              // pulse-counted position (encoder-count scale)
+  long meas;             // measured encoder position (raw encoder counts)
+  long target;           // planner reference position (encoder-count scale)
+  int lag;               // target - meas (encoder counts)
+  int vel;               // reference velocity (encoder counts/s)
+  int p_acc;             // planned acceleration (encoder counts/s²)
+  int p_dist;            // remaining distance (encoder counts)
   uint16_t sg_result;
-  uint8_t  cs_actual;  // TMC CS_ACTUAL (0–31), cached by DiagnosticsTask
-  uint8_t  pwm_scale;  // TMC PWM_SCALE (0–255), cached by DiagnosticsTask
-  int16_t  mvel;       // measured encoder velocity (steps/s), computed per telemetry tick
+  uint8_t  cs_actual;    // TMC CS_ACTUAL (0–31), cached by DiagnosticsTask
+  uint8_t  pwm_scale;    // TMC PWM_SCALE (0–255), cached by DiagnosticsTask
+  int16_t  mvel;         // measured encoder velocity (encoder counts/s)
 };
 
 #endif

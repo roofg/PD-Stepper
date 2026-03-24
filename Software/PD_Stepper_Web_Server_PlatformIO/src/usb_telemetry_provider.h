@@ -32,21 +32,24 @@ struct UsbWriteGuard {
  *
  * Wire protocol (little-endian):
  *
+ *   All position/velocity/acceleration values are in ENCODER COUNTS
+ *   (4096 counts per motor revolution, independent of microstepping).
+ *
  *   Offset  Size  Field
  *   0       1     Header byte 0: 0xAA
  *   1       1     Header byte 1: 0xBB
  *   2       4     timestamp  (uint32_t, microseconds)
- *   6       4     pos        (int32_t, steps, pulse-counted)
- *   10      4     meas       (int32_t, steps, encoder-derived)
- *   14      4     target     (int32_t, steps, planner reference)
- *   18      2     lag        (int16_t, steps)
- *   20      2     vel        (int16_t, steps/s)
- *   22      2     p_acc      (int16_t, steps/s^2)
- *   24      2     p_dist     (int16_t, steps remaining)
+ *   6       4     pos        (int32_t, encoder counts, pulse-counted)
+ *   10      4     meas       (int32_t, raw encoder counts)
+ *   14      4     target     (int32_t, encoder counts, planner reference)
+ *   18      2     lag        (int16_t, encoder counts)
+ *   20      2     vel        (int16_t, encoder counts/s)
+ *   22      2     p_acc      (int16_t, encoder counts/s^2)
+ *   24      2     p_dist     (int16_t, encoder counts remaining)
  *   26      2     sg_result  (uint16_t, stallguard result)
  *   28      1     cs_actual  (uint8_t, 0-31, TMC current scale)
  *   29      1     pwm_scale  (uint8_t, 0-255, TMC PWM duty)
- *   30      2     mvel       (int16_t, steps/s, measured encoder velocity)
+ *   30      2     mvel       (int16_t, encoder counts/s, measured velocity)
  *   32      1     checksum   (XOR of bytes 2..31)
  *        Total = 33 bytes per telemetry packet
  *
@@ -56,7 +59,7 @@ struct UsbWriteGuard {
  *   Offset  Size  Field
  *   0       1     0xAA
  *   1       1     0xCC  (different second byte marks a STOP)
- *   2       4     pos        (int32_t)
+ *   2       4     pos        (int32_t, encoder counts)
  *   6       32    reason     (null-terminated ASCII string)
  *        Total = 38 bytes per stop packet
  */

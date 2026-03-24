@@ -634,9 +634,9 @@ static void PlannerTask(void *) {
         if (s_teleQueue) {
             TelemetryData stopData = {};
             stopData.type = TELEMETRY_STOP;
-            stopData.pos  = (long)g_meas_pos;
+            stopData.pos  = (long)(g_meas_pos / counts_to_steps); // encoder-count scale
             strncpy(stopData.stopReason, stopReason, sizeof(stopData.stopReason) - 1);
-            Serial1.printf("DBG:STOP_QUEUED pos=%ld reason=%s\n", (long)g_meas_pos, stopReason);
+            Serial1.printf("DBG:STOP_QUEUED pos=%ld reason=%s\n", stopData.pos, stopReason);
             if (xQueueSend(s_teleQueue, &stopData, pdMS_TO_TICKS(200)) != pdPASS) {
                 Serial1.printf("ERR:STOP_QUEUE_FULL — STOP packet dropped!\n");
             }
@@ -758,7 +758,7 @@ static void ControlTask(void *) {
                 if (millis() - holdVelRefMs >= 100) {
                     float velDt = (millis() - holdVelRefMs) / 1000.0f;
                     holdVelEst  = (float)(encCounts - holdVelRefEnc)
-                                  * counts_to_steps / (velDt > 0.001f ? velDt : 0.1f);
+                                  / (velDt > 0.001f ? velDt : 0.1f);
                     holdVelRefEnc = encCounts;
                     holdVelRefMs  = millis();
                 }
@@ -767,11 +767,10 @@ static void ControlTask(void *) {
                     float holdTeleDt = (millis() - lastTeleMs) / 1000.0f;
                     lastTeleMs  = millis();
 
-                    // Short-window measured velocity over the telemetry interval.
-                    // During CORRECTING this reuses lastTeleEnc from the motion path,
-                    // giving seamless velocity continuity across the transition.
+                    // Short-window measured velocity over the telemetry interval
+                    // in encoder counts/s. During CORRECTING this reuses lastTeleEnc
+                    // from the motion path for seamless velocity continuity.
                     float holdMVel = (float)(encCounts - lastTeleEnc)
-                                     * counts_to_steps
                                      / (holdTeleDt > 0.001f ? holdTeleDt : 0.01f);
                     lastTeleEnc = encCounts; // keep in sync (used by motion path after next move)
 
@@ -784,17 +783,17 @@ static void ControlTask(void *) {
                         TelemetryData d;
                         d.type      = TELEMETRY_UPDATE;
                         d.timestamp = micros();
-                        d.pos       = stepgen::getStepCount();
-                        d.meas      = (long)measPos;
-                        d.target    = (long)g_hold_target;
-                        d.lag       = (int)(g_hold_target - measPos);
-                        d.vel       = (int)displayVel;
+                        d.pos       = (long)(stepgen::getStepCount() / counts_to_steps);
+                        d.meas      = encCounts;
+                        d.target    = (long)(g_hold_target / counts_to_steps);
+                        d.lag       = (int)((g_hold_target - measPos) / counts_to_steps);
+                        d.vel       = (int)displayVel;  // already enc counts/s
                         d.p_acc     = 0;
                         d.p_dist    = 0;
                         d.sg_result = g_sg_result;
                         d.cs_actual = g_cs_actual_cache;
                         d.pwm_scale = g_pwm_scale_cache;
-                        d.mvel      = (int16_t)holdMVel;
+                        d.mvel      = (int16_t)holdMVel; // already enc counts/s
                         xQueueSend(s_teleQueue, &d, 0);
                     }
 
@@ -863,25 +862,24 @@ static void ControlTask(void *) {
         if (millis() - lastTeleMs >= 10) {
             float dt_s    = (millis() - lastTeleMs) / 1000.0f;
             lastTeleMs    = millis();
-            float mVel    = (float)(encCounts - lastTeleEnc)
-                            * counts_to_steps / dt_s;
+            float mVel    = (float)(encCounts - lastTeleEnc) / dt_s; // enc counts/s
             lastTeleEnc   = encCounts;
 
             if (s_teleQueue) {
                 TelemetryData d;
                 d.type      = TELEMETRY_UPDATE;
                 d.timestamp = micros();
-                d.pos       = stepgen::getStepCount();
-                d.meas      = (long)measPos;
-                d.target    = (long)ref.pos;
-                d.lag       = (int)(ref.pos - measPos);
-                d.vel       = (int)ref.vel;
-                d.p_acc     = (int)ref.acc;
-                d.p_dist    = (int)(g_target_pos - measPos);
+                d.pos       = (long)(stepgen::getStepCount() / counts_to_steps);
+                d.meas      = encCounts;
+                d.target    = (long)(ref.pos / counts_to_steps);
+                d.lag       = (int)((ref.pos - measPos) / counts_to_steps);
+                d.vel       = (int)(ref.vel / counts_to_steps);
+                d.p_acc     = (int)(ref.acc / counts_to_steps);
+                d.p_dist    = (int)((g_target_pos - measPos) / counts_to_steps);
                 d.sg_result = g_sg_result;
-                d.cs_actual = g_cs_actual_cache;  // Option 3: TMC cache (atomic uint8 read)
-                d.pwm_scale = g_pwm_scale_cache;  // Option 3: TMC cache (atomic uint8 read)
-                d.mvel      = (int16_t)mVel;
+                d.cs_actual = g_cs_actual_cache;
+                d.pwm_scale = g_pwm_scale_cache;
+                d.mvel      = (int16_t)mVel; // enc counts/s
                 // Non-blocking: drop packet if queue full rather than stalling.
                 xQueueSend(s_teleQueue, &d, 0);
             }
