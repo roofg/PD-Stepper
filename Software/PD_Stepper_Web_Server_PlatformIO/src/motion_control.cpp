@@ -148,13 +148,19 @@ public:
 
         float targetAcc = 0.0f;
 
-        if (distToTarget < 2.0f && fabsf(spd - exitVel) < 20.0f) {
-            // Damping zone: servo velocity smoothly to exitVel
+        if (distToTarget < 5.0f && fabsf(spd - exitVel) < 20.0f) {
+            // Damping zone: servo velocity to exitVel; if stopped short, nudge toward target.
             float signedExit = moveForward ? exitVel : -exitVel;
             targetAcc = (signedExit - currentVel) * 10.0f;
+            // If motor has stopped short of target add a gentle position-proportional nudge
+            // so isComplete() can fire rather than hanging at ~0 velocity.
+            if (spd < 10.0f && distToTarget > 0.1f) {
+                float nudge = moveForward ? (distToTarget * 300.0f) : -(distToTarget * 300.0f);
+                targetAcc += nudge;
+            }
             if (fabsf(targetAcc) > maxA) targetAcc = (targetAcc > 0) ? maxA : -maxA;
-        } else if (brakeDist >= distToTarget - spd * 0.002f) {
-            // Start braking (one-tick lookahead buffer prevents overshoot)
+        } else if (brakeDist >= distToTarget - _brakeLookahead(spd)) {
+            // Start braking with S-curve-aware lookahead (see _brakeLookahead).
             targetAcc = (currentVel > 0) ? -maxA : maxA;
         } else if (spd < cruiseVel) {
             // Accelerate to cruise speed
@@ -179,9 +185,32 @@ public:
         currentPos += currentVel * dt;
     }
 
-    // Simple position crossing — no velocity gate.
+    // Position crossing with a small tolerance for zero-exit-vel blocks.
+    // Allows isComplete() to fire when the motor stops fractionally short of the
+    // target (≤3 steps) due to S-curve undershoot; the hold PD then corrects it.
+    // For chained blocks with non-zero exitVel the tolerance is 0 (exact crossing).
     bool isComplete() const {
-        return moveForward ? (currentPos >= targetPos) : (currentPos <= targetPos);
+        float tol = (exitVel < 5.0f) ? 3.0f : 0.0f;
+        return moveForward ? (currentPos >= targetPos - tol)
+                           : (currentPos <= targetPos + tol);
+    }
+
+private:
+    // Dynamic braking lookahead that accounts for the S-curve jerk ramp.
+    //
+    // When braking triggers, currentAcc must ramp from its current value down to
+    // -maxA.  This ramp takes T = (currentAcc + maxA) / jerk seconds.  During
+    // that window the motor continues at roughly constant velocity, traveling an
+    // extra ~spd*T steps beyond what a hard-decel model predicts.
+    //
+    // Derivation (integrating the linear acc ramp):
+    //   extra overshoot ≈ jerk * T² * (spd/(2*maxA) + T/3)
+    //
+    // Adding 2 steps of margin gives the motor a ≤2-step undershoot that the
+    // damping zone + isComplete tolerance catch cleanly.
+    float _brakeLookahead(float spd) const {
+        float T = (currentAcc > -maxA) ? (currentAcc + maxA) / jerk : 0.0f;
+        return jerk * T * T * (spd / (2.0f * maxA) + T / 3.0f) + 2.0f;
     }
 };
 
@@ -553,8 +582,12 @@ static void PlannerTask(void *) {
                 if (g_fault_brownout)     { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
                 if (!s_running) break;
 
-                // Block complete: simple position crossing — no velocity window needed
-                if (planner.isComplete()) break;
+                // Block complete: position crossing (with small zero-exit-vel tolerance)
+                if (planner.isComplete()) {
+                    Serial1.printf("DBG:BLOCK_DONE vel=%.1f pos=%.1f tgt=%.1f\n",
+                                   planner.currentVel, planner.currentPos, planner.targetPos);
+                    break;
+                }
 
                 vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
             }
