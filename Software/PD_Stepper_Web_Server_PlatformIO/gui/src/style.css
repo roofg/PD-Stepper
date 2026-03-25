@@ -471,3 +471,44 @@ select:disabled { opacity: 0.4; }
 .u-off *      { opacity: 0.35; }
 /* Hide the x-axis "Time" row — users can't meaningfully toggle it */
 .u-legend .u-series:first-child { display: none; }
+
+/* ── Auto-tuner panel */
+#autotune-panel { margin-top: 10px; }
+
+.autotune-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  margin-bottom: 4px;
+  color: var(--text-dim);
+}
+
+.at-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+#at-log-list, #at-summary-list {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-family: monospace;
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+#at-log-list li     { color: var(--text-dim); padding: 1px 0; }
+#at-summary-list li { padding: 2px 0; }
+#at-summary-list li.improved  { color: var(--accent); }
+#at-summary-list li.unchanged { color: var(--text-dim); }
+
+.autotune-results-header {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 6px 0 2px;
+}

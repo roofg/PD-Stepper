@@ -37,11 +37,38 @@
               </label>
             </div>
             <div class="settings-row">
+              <label class="settings-label">D Filter α
+                <input type="number" id="set-d-alpha" value="0.80" step="0.01" min="0" max="0.99" disabled />
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">Jerk Ramp (ms)
+                <input type="number" id="set-jerk" value="0" step="10" min="0" max="1000" placeholder="0 = auto (~10ms)" disabled />
+              </label>
+            </div>
+            <div class="settings-row">
               <label class="settings-label">Kv (Phase Lead)
                 <input type="number" id="set-kv" value="0.0" step="0.001" min="0" disabled />
               </label>
             </div>
             <button id="btn-apply-pd" class="btn-apply-group" disabled>Apply PD Gains</button>
+
+            <div id="autotune-panel">
+              <button id="btn-autotune" class="btn-apply-group" disabled>Auto-Tune</button>
+              <div id="autotune-progress" class="hidden">
+                <div class="autotune-header">
+                  <span id="at-param-label">Tuning…</span>
+                  <span id="at-iter-label">Step 0/16</span>
+                  <button id="btn-autotune-stop" class="btn-reset-chart">Stop</button>
+                </div>
+                <div class="at-bar"><div id="at-progress-fill" class="cs-fill" style="width:0%"></div></div>
+                <ul id="at-log-list"></ul>
+              </div>
+              <div id="autotune-results" class="hidden">
+                <div class="autotune-results-header">Results — review, then Apply &amp; Save</div>
+                <ul id="at-summary-list"></ul>
+              </div>
+            </div>
           </section>
 
           <!-- TMC / Motion Settings card -->
@@ -237,22 +264,22 @@
                 <span class="metric-label">Lag (°)</span>
                 <span class="metric-value" id="tele-lag">—</span>
               </div>
-              <div class="metric">
-                <span class="metric-label">Max Lag (°)</span>
-                <span class="metric-value" id="tele-max-lag">—</span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">Skipped (°)</span>
-                <span class="metric-value" id="tele-skipped">—</span>
-              </div>
             </div>
             <!-- Per-move performance summary -->
             <div id="perf-metrics">
               <h3 class="perf-heading">Move Performance</h3>
               <div class="metrics">
                 <div class="metric">
-                  <span class="metric-label">Max Tracking Error</span>
+                  <span class="metric-label">Max Lag</span>
                   <span class="metric-value" id="perf-max-lag">—</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">Mean Lag</span>
+                  <span class="metric-value" id="perf-mean-lag">—</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-label">Step Loss</span>
+                  <span class="metric-value" id="perf-step-loss">—</span>
                 </div>
                 <div class="metric">
                   <span class="metric-label">Lag Jitter (σ)</span>

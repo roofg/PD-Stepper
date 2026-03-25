@@ -45,9 +45,11 @@ static char  standstillMode[16] = "NORMAL";
 static bool  stealthchopEnabled = true;
 static bool  coolstepEnabled    = true;
 static int   setSpreadCycleSpeed = 0;  // steps/s threshold for StealthChop→SpreadCycle (0 = disabled)
-static float setKp = 3.0f;
-static float setKd = 0.1f;
-static float setKv = 0.0f;
+static float setKp     = 3.0f;
+static float setKd     = 0.1f;
+static float setKv     = 0.0f;
+static float setDAlpha = 0.8f;
+static float setJerk   = 0.0f;  // ramp time in ms; 0 = auto (~10 ms, trapezoidal)
 
 // Note: button debounce and open-loop position control variables have been
 // removed — the new motion architecture handles all motion via serial commands.
@@ -180,11 +182,11 @@ void setup() {
   Serial1.println("Setup complete");
 }
 
-/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 21 bytes) over USBSerial.
+/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 25 bytes) over USBSerial.
 /// Safe to call from setup() and processSerialCommands() (both run when
 /// TelemetryTask is idle).  g_usbWriteMutex serialises against DiagnosticsTask.
 void sendSettingsPacket() {
-  uint8_t buf[21];
+  uint8_t buf[25];
   buf[0] = 0xAA; buf[1] = 0xEE;
   buf[2] = (uint8_t)setVoltage;
   buf[3] = (uint8_t)setCurrent;
@@ -213,11 +215,17 @@ void sendSettingsPacket() {
   buf[16] = kvInt & 0xFF; buf[17] = kvInt >> 8;
   uint16_t spd = (uint16_t)setSpreadCycleSpeed;
   buf[18] = spd & 0xFF; buf[19] = spd >> 8;
+  float daClamped = setDAlpha < 0.0f ? 0.0f : (setDAlpha > 6.5535f ? 6.5535f : setDAlpha);
+  uint16_t daInt = (uint16_t)(daClamped * 10000.0f);
+  buf[20] = daInt & 0xFF; buf[21] = daInt >> 8;
+  float jerkClamped = setJerk < 0.0f ? 0.0f : (setJerk > 65535.0f ? 65535.0f : setJerk);
+  uint16_t jerkInt = (uint16_t)jerkClamped;  // ramp time in ms, 1 ms resolution
+  buf[22] = jerkInt & 0xFF; buf[23] = jerkInt >> 8;
   uint8_t cs = 0;
-  for (int i = 2; i < 20; i++) cs ^= buf[i];
-  buf[20] = cs;
+  for (int i = 2; i < 24; i++) cs ^= buf[i];
+  buf[24] = cs;
   UsbWriteGuard guard;
-  if (guard) USBSerial.write(buf, 21);
+  if (guard) USBSerial.write(buf, 25);
 }
 
 void processSerialCommands() {
@@ -257,9 +265,17 @@ void processSerialCommands() {
           } else if (strcmp(cmd, "set_pd") == 0) {
             float kp = doc["kp"] | 3.0f;
             float kd = doc["kd"] | 0.1f;
-            setKp = kp; setKd = kd;
+            float da = doc["d_alpha"] | setDAlpha;  // keep current if not supplied
+            setKp = kp; setKd = kd; setDAlpha = da;
             motion::setPD(kp, kd);
-            Serial1.printf("Set PD - Kp: %.4f, Kd: %.4f\n", kp, kd);
+            motion::setDFilterAlpha(da);
+            Serial1.printf("Set PD - Kp: %.4f, Kd: %.4f, d_alpha: %.4f\n", kp, kd, da);
+
+          } else if (strcmp(cmd, "set_jerk") == 0) {
+            float ms = doc["value"] | 0.0f;
+            setJerk = ms;
+            motion::setJerkRampTime(ms / 1000.0f);
+            Serial1.printf("Set jerk ramp time: %.0f ms\n", ms);
 
           } else if (strcmp(cmd, "set_pid") == 0) {
             // Legacy alias: map ki → kd for backwards compat with scripts
@@ -394,12 +410,12 @@ void processSerialCommands() {
                 "\"hold_delay\":%d,\"microsteps\":%d,"
                 "\"stall_threshold\":%d,\"standstill_mode\":\"%s\","
                 "\"stealthchop\":%s,\"coolstep\":%s,"
-                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f}\n",
+                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,\"d_alpha\":%.4f,\"jerk\":%.1f}\n",
                 setVoltage, setCurrent, setHoldCurrent, setHoldDelay,
                 setMicrosteps, setStall, standstillMode,
                 stealthchopEnabled ? "true" : "false",
                 coolstepEnabled    ? "true" : "false",
-                setKp, setKd, setKv);
+                setKp, setKd, setKv, setDAlpha, setJerk);
             sendSettingsPacket();
 
           } else if (strcmp(cmd, "get_driver_status") == 0) {
@@ -551,13 +567,19 @@ void readSettings() {
     stealthchopEnabled = preferences.getBool("stealthChop", true);
     coolstepEnabled    = preferences.getBool("coolStep",    true);
     setSpreadCycleSpeed = preferences.getInt("spreadSpeed", 0);
-    setKp = preferences.getFloat("kp", 3.0f);
-    setKd = preferences.getFloat("kd", 0.1f);
-    setKv = preferences.getFloat("kv", 0.0f);
+    setKp     = preferences.getFloat("kp",      3.0f);
+    setKd     = preferences.getFloat("kd",      0.1f);
+    setKv     = preferences.getFloat("kv",      0.0f);
+    setDAlpha = preferences.getFloat("d_alpha", 0.8f);
+    setJerk   = preferences.getFloat("jerk_ms", 0.0f);
     preferences.end();
     // Apply PD gains now (motion tasks pick them up on start)
     motion::setPD(setKp, setKd);
     motion::setPhaseLeadGain(setKv);
+    motion::setDFilterAlpha(setDAlpha);
+    if (setJerk > 0.0f) {
+        motion::setJerkRampTime(setJerk / 1000.0f);
+    }
   }
 }
 
@@ -576,6 +598,8 @@ void writeSettings() {
   preferences.putFloat("kp",           setKp);
   preferences.putFloat("kd",           setKd);
   preferences.putFloat("kv",           setKv);
+  preferences.putFloat("d_alpha",      setDAlpha);
+  preferences.putFloat("jerk_ms",      setJerk);
   Serial1.println("Saving settings to flash");
   preferences.end();
   configureSettings();

@@ -53,9 +53,12 @@ static volatile int32_t g_uSteps_setting = 32;
 // PD gains — written via setPD() / setPhaseLeadGain() from main task (Core 0);
 // read by ControlTask (Core 1). volatile ensures the compiler does not cache
 // the value in a register across the core boundary on Xtensa LX7.
-static volatile float g_kp = 3.0f;
-static volatile float g_kd = 0.1f;
-static volatile float g_kv = 0.0f;
+static volatile float g_kp      = 3.0f;
+static volatile float g_kd      = 0.1f;
+static volatile float g_kv      = 0.0f;
+static volatile float g_d_alpha = 0.8f;  // D-term EMA filter coefficient
+static volatile float g_jerk        = 0.0f;  // µsteps/s³; 0 = auto (maxA * 100)
+static volatile float g_jerk_ramp_s = 0.0f;  // ramp time in seconds; 0 = use g_jerk
 
 // Brownout threshold — 70% of the configured USB-PD supply voltage.
 // Written once from setup() via setConfiguredVoltage(); read by PlannerTask.
@@ -130,7 +133,13 @@ public:
         cruiseVel   = blk.cruiseVel;
         exitVel     = blk.exitVel;
         maxA        = (blk.accel > 1.0f) ? blk.accel : 1.0f;
-        jerk        = maxA * 100.0f;
+        if (g_jerk_ramp_s > 0.0f) {
+            jerk = maxA / g_jerk_ramp_s;        // ramp-time mode: auto-scales with accel
+        } else if (g_jerk > 0.0f) {
+            jerk = g_jerk;                       // legacy absolute µsteps/s³
+        } else {
+            jerk = maxA * 100.0f;               // auto (~10 ms ramp, essentially trapezoidal)
+        }
         moveForward = blk.forward;
         currentAcc  = 0;
         // currentVel intentionally preserved for velocity continuity
@@ -828,6 +837,7 @@ static void ControlTask(void *) {
         // --- Refresh PD gains (written infrequently by main task at rest) ---
         pd.setGains(g_kp, g_kd);
         pd.setPhaseLeadGain(g_kv);
+        pd.setDFilterAlpha(g_d_alpha);
 
         // --- Consume latest trajectory point (reuse last if buffer empty) ---
         TrajectoryPoint newRef;
@@ -903,6 +913,19 @@ void setPD(float kp, float kd) {
 
 void setPhaseLeadGain(float kv) {
     g_kv = kv;
+}
+
+void setDFilterAlpha(float alpha) {
+    g_d_alpha = alpha;
+}
+
+void setJerk(float jerkStepsPerSec3) {
+    g_jerk = jerkStepsPerSec3;
+}
+
+void setJerkRampTime(float rampSeconds) {
+    g_jerk_ramp_s = rampSeconds;
+    g_jerk = 0.0f;  // clear legacy value so ramp-time takes priority
 }
 
 void setConfiguredVoltage(float volts) {

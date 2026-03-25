@@ -63,6 +63,7 @@ export function degPerSec2ToStepsPerSec2(dps2: number, usteps: number): number {
   return dps2 / 360 * FULL_STEPS_PER_REV * usteps;
 }
 
+
 /** RPM → microsteps/s (alias used for SpreadCycle threshold). */
 export function rpmToMicrostepsPerSec(rpm: number, usteps: number): number {
   return rpmToStepsPerSec(rpm, usteps);

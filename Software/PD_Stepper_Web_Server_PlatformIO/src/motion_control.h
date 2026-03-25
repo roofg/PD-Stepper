@@ -37,6 +37,21 @@ void setPD(float kp, float kd);
 // Start at 0 and increase in small steps during tuning.
 void setPhaseLeadGain(float kv);
 
+// Set the D-term EMA filter coefficient (0.0 = no filter, 0.8 = ~35 Hz cutoff).
+// Higher values attenuate encoder quantization noise on the derivative more
+// aggressively; values above ~0.95 make the D term sluggish.
+void setDFilterAlpha(float alpha);
+
+// Set the S-curve jerk limit (µsteps/s³). Legacy interface — prefer setJerkRampTime().
+// 0 = auto (equivalent to maxAccel × 100, essentially trapezoidal).
+void setJerk(float jerkStepsPerSec3);
+
+// Set the S-curve ramp time (seconds). Jerk is computed as Accel / rampSeconds,
+// so jerk auto-scales with accel — one tuning parameter regardless of move profile.
+// 0 = auto (~10 ms, essentially trapezoidal). Typical sweet spot: 0.15–0.20 s.
+// Calling this clears any legacy absolute jerk value.
+void setJerkRampTime(float rampSeconds);
+
 // Set the USB-PD configured supply voltage (V). The planner computes a
 // brownout threshold of 70% of this value and trips a fault if VBus drops
 // below it. Call this from setup() after readSettings().

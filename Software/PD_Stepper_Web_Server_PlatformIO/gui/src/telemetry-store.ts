@@ -20,11 +20,13 @@ export interface MoveStats {
   skippedCounts:     number;  // (pos−pos₀) − (meas−meas₀): divergence (encoder counts)
   peakSkippedCounts: number;  // max |relative divergence| over the move (encoder counts)
   peakLagCounts:     number;  // max |lag| over the move (encoder counts)
+  meanLagCounts:     number;  // mean |lag| over the move (encoder counts)
   lagJitter:         number;  // rolling σ of last N lag samples (encoder counts)
   effortPct:         number;  // |lag| / max(|vel|, 1) × 100 — PD working hard?
   holdPeakDevCounts: number;  // max |lag| during hold phase (encoder counts)
   // Degree-converted accessors
   peakLagDeg:        number;
+  meanLagDeg:        number;
   holdPeakDevDeg:    number;
   lagJitterDeg:      number;
   skippedDeg:        number;
@@ -50,6 +52,8 @@ export class TelemetryStore {
   private _lastPkt: TelemetryUpdate | null = null;
   private _peakSkippedCounts = 0;
   private _peakLagCounts = 0;
+  private _lagAbsSum = 0;
+  private _lagSampleCount = 0;
   private _lagWindow: number[] = [];
   private _holdPhase = false;
   private _holdPeakDevCounts = 0;
@@ -62,20 +66,24 @@ export class TelemetryStore {
   get moveStats(): MoveStats {
     const pkt = this._lastPkt;
     if (!pkt) return {
-      skippedCounts: 0, peakSkippedCounts: 0, peakLagCounts: 0,
+      skippedCounts: 0, peakSkippedCounts: 0, peakLagCounts: 0, meanLagCounts: 0,
       lagJitter: 0, effortPct: 0, holdPeakDevCounts: 0,
-      peakLagDeg: 0, holdPeakDevDeg: 0, lagJitterDeg: 0, skippedDeg: 0,
+      peakLagDeg: 0, meanLagDeg: 0, holdPeakDevDeg: 0, lagJitterDeg: 0, skippedDeg: 0,
     };
     const skippedCounts = (pkt.pos - pkt.meas) - (this._pos0 - this._meas0);
     const jitter = this._lagJitter();
+    const meanLagCounts = this._lagSampleCount > 0
+      ? this._lagAbsSum / this._lagSampleCount : 0;
     return {
       skippedCounts,
       peakSkippedCounts: this._peakSkippedCounts,
       peakLagCounts:     this._peakLagCounts,
+      meanLagCounts,
       lagJitter:         jitter,
       effortPct:         Math.abs(pkt.lag) / Math.max(Math.abs(pkt.vel), 1) * 100,
       holdPeakDevCounts: this._holdPeakDevCounts,
       peakLagDeg:        encToDeg(this._peakLagCounts),
+      meanLagDeg:        encToDeg(meanLagCounts),
       holdPeakDevDeg:    encToDeg(this._holdPeakDevCounts),
       lagJitterDeg:      encToDeg(jitter),
       skippedDeg:        encToDeg(Math.abs(skippedCounts)),
@@ -98,6 +106,8 @@ export class TelemetryStore {
     this._lastPkt = null;
     this._peakSkippedCounts = 0;
     this._peakLagCounts = 0;
+    this._lagAbsSum = 0;
+    this._lagSampleCount = 0;
     this._lagWindow = [];
     this._holdPhase = false;
     this._holdPeakDevCounts = 0;
@@ -129,6 +139,8 @@ export class TelemetryStore {
     const relSkipped = Math.abs((pkt.pos - pkt.meas) - (this._pos0 - this._meas0));
     if (relSkipped > this._peakSkippedCounts) this._peakSkippedCounts = relSkipped;
     if (Math.abs(pkt.lag) > this._peakLagCounts) this._peakLagCounts = Math.abs(pkt.lag);
+    this._lagAbsSum += Math.abs(pkt.lag);
+    this._lagSampleCount++;
     if (this._holdPhase && Math.abs(pkt.lag) > this._holdPeakDevCounts) {
       this._holdPeakDevCounts = Math.abs(pkt.lag);
     }

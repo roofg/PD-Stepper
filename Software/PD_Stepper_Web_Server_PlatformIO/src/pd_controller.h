@@ -13,10 +13,20 @@
 // that appears at higher speeds, effectively making the commanded position
 // "lead" the planner reference by a velocity-proportional amount.
 //
+// D-term filter (d_alpha): the AS5600 encoder has 4096 discrete counts/rev,
+// so measured_pos advances in integer steps. Differentiating those steps
+// produces velocity spikes at the encoder tick rate — audible as thumping at
+// higher speeds. An EMA low-pass filter on error_rate suppresses this noise
+// while preserving the D term's damping at motion-relevant frequencies.
+//   d_alpha = 0.0 → no filter (raw derivative, original behaviour)
+//   d_alpha = 0.8 → ~35 Hz cutoff, attenuates encoder tick noise ~20×
+//   d_alpha = 0.95 → ~8 Hz cutoff, very smooth but D response becomes sluggish
+//
 // Usage:
 //   PDController pd;
 //   pd.setGains(kp, kd);
-//   pd.setPhaseLeadGain(kv);   // start at 0, tune upward
+//   pd.setPhaseLeadGain(kv);       // start at 0, tune upward
+//   pd.setDFilterAlpha(d_alpha);   // start at 0.8, tune if needed
 //   float correction = pd.compute(ref_pos, ref_vel, measured_pos, dt);
 //   float velocity_cmd = ref_vel + correction;
 //
@@ -27,11 +37,16 @@ struct PDController {
     float Kp = 3.0f;
     float Kd = 0.1f;
     float Kv = 0.0f;              // phase-lead gain (microsteps lead per unit velocity)
+    float d_alpha = 0.8f;         // EMA filter coefficient for D term (0=off, <1=smoother)
     float max_correction = 5000.0f; // clamp (microsteps/sec)
 
-    float prev_error = 0.0f;
+    float prev_error    = 0.0f;
+    float filtered_rate = 0.0f;   // EMA state for D-term filter
 
-    void reset() { prev_error = 0.0f; }
+    void reset() {
+        prev_error    = 0.0f;
+        filtered_rate = 0.0f;
+    }
 
     void setGains(float kp, float kd) {
         Kp = kp;
@@ -39,6 +54,7 @@ struct PDController {
     }
 
     void setPhaseLeadGain(float kv) { Kv = kv; }
+    void setDFilterAlpha(float a)   { d_alpha = a; }
 
     // Returns velocity correction in microsteps/sec.
     float compute(float target_pos, float target_vel, float measured_pos, float dt) {
@@ -51,10 +67,13 @@ struct PDController {
         if (fabsf(error) < 1.5f) error = 0.0f;
 
         // Derivative (backward difference, guarded against dt ≈ 0)
-        float error_rate = (dt > 1e-6f) ? (error - prev_error) / dt : 0.0f;
+        float raw_rate = (dt > 1e-6f) ? (error - prev_error) / dt : 0.0f;
         prev_error = error;
 
-        float correction = Kp * error + Kd * error_rate;
+        // EMA low-pass filter: attenuates encoder quantization spikes on D term
+        filtered_rate = d_alpha * filtered_rate + (1.0f - d_alpha) * raw_rate;
+
+        float correction = Kp * error + Kd * filtered_rate;
 
         // Clamp so feedback never exceeds a safe fraction of max speed
         if (correction >  max_correction) correction =  max_correction;

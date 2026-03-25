@@ -4,6 +4,7 @@ import { moveCommand, type Packet, type SettingsPacket, type StatusPacket } from
 import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
 import { encToDeg, encToRev, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec } from './units';
+import { AutoTuner, type TuneResult, type TunerProgress } from './tuner';
 
 const conn  = new SerialConnection();
 const store = new TelemetryStore();
@@ -25,10 +26,10 @@ const teleMeas        = document.getElementById('tele-meas')          as HTMLSpa
 const teleTarget      = document.getElementById('tele-target')        as HTMLSpanElement;
 const teleVel         = document.getElementById('tele-vel')           as HTMLSpanElement;
 const teleLag         = document.getElementById('tele-lag')           as HTMLSpanElement;
-const teleMaxLag      = document.getElementById('tele-max-lag')       as HTMLSpanElement;
-const teleSkipped     = document.getElementById('tele-skipped')       as HTMLSpanElement;
 const teleStatus      = document.getElementById('tele-status')        as HTMLDivElement;
 const perfMaxLag      = document.getElementById('perf-max-lag')       as HTMLSpanElement;
+const perfMeanLag     = document.getElementById('perf-mean-lag')      as HTMLSpanElement;
+const perfStepLoss    = document.getElementById('perf-step-loss')     as HTMLSpanElement;
 const perfLagJitter   = document.getElementById('perf-lag-jitter')    as HTMLSpanElement;
 const perfEffort      = document.getElementById('perf-effort')        as HTMLSpanElement;
 const chartContainer  = document.getElementById('chart-container')    as HTMLDivElement;
@@ -52,10 +53,21 @@ const linkDrain       = document.getElementById('link-drain')         as HTMLSpa
 // PD settings card
 const setKp           = document.getElementById('set-kp')             as HTMLInputElement;
 const setKd           = document.getElementById('set-kd')             as HTMLInputElement;
+const setDAlpha       = document.getElementById('set-d-alpha')        as HTMLInputElement;
+const setJerkInput    = document.getElementById('set-jerk')           as HTMLInputElement;
 const setKv           = document.getElementById('set-kv')             as HTMLInputElement;
 const btnApplyPd      = document.getElementById('btn-apply-pd')       as HTMLButtonElement;
 const btnSave         = document.getElementById('btn-save')           as HTMLButtonElement;
 const syncIndicator   = document.getElementById('settings-sync-indicator') as HTMLDivElement;
+const btnAutotune     = document.getElementById('btn-autotune')       as HTMLButtonElement;
+const btnAutotuneStop = document.getElementById('btn-autotune-stop')  as HTMLButtonElement;
+const autotuneProgress= document.getElementById('autotune-progress')  as HTMLDivElement;
+const autotuneResults = document.getElementById('autotune-results')   as HTMLDivElement;
+const atParamLabel    = document.getElementById('at-param-label')     as HTMLSpanElement;
+const atIterLabel     = document.getElementById('at-iter-label')      as HTMLSpanElement;
+const atProgressFill  = document.getElementById('at-progress-fill')   as HTMLDivElement;
+const atLogList       = document.getElementById('at-log-list')        as HTMLUListElement;
+const atSummaryList   = document.getElementById('at-summary-list')    as HTMLUListElement;
 
 // TMC settings card
 const setVoltage      = document.getElementById('set-voltage')        as HTMLSelectElement;
@@ -104,6 +116,7 @@ let stopsReceived = 0;
 let settingsReceived = false;
 let currentMicrosteps = 32;  // from SETTINGS packet, used for deg→µstep command conversion
 let linkInterval: ReturnType<typeof setInterval> | null = null;
+let activeTuner: AutoTuner | null = null;
 
 // Chart rendering is decoupled from packet arrival via requestAnimationFrame.
 // Packets arrive at 100 Hz; the browser renders at ~60 Hz. Setting this flag
@@ -140,8 +153,11 @@ function setMotionEnabled(on: boolean): void {
 function setSettingsEnabled(on: boolean): void {
   setKp.disabled          = !on;
   setKd.disabled          = !on;
+  setDAlpha.disabled      = !on;
+  setJerkInput.disabled   = !on;
   setKv.disabled          = !on;
   btnApplyPd.disabled     = !on;
+  btnAutotune.disabled    = !on;
   btnSave.disabled        = !on;
   setVoltage.disabled     = !on;
   setMicrosteps.disabled  = !on;
@@ -194,9 +210,13 @@ const DEV_RANGE = encToDeg(20);  // ~1.76°
 /** Reset Move Performance and Hold Accuracy to dimmed placeholders */
 function resetPerfAndHold(): void {
   perfMaxLag.textContent    = '–';
+  perfMeanLag.textContent   = '–';
+  perfStepLoss.textContent  = '–';
   perfLagJitter.textContent = '–';
   perfEffort.textContent    = '–';
   perfMaxLag.classList.add('dimmed');
+  perfMeanLag.classList.add('dimmed');
+  perfStepLoss.classList.add('dimmed');
   perfLagJitter.classList.add('dimmed');
   perfEffort.classList.add('dimmed');
 
@@ -382,11 +402,104 @@ function sendCmd(obj: Record<string, unknown>): void {
 btnApplyPd.addEventListener('click', () => {
   currentKp = parseFloat(setKp.value);
   currentKd = parseFloat(setKd.value);
-  sendCmd({ cmd: 'set_pd', kp: currentKp, kd: currentKd });
+  sendCmd({ cmd: 'set_pd', kp: currentKp, kd: currentKd, d_alpha: parseFloat(setDAlpha.value) });
+  sendCmd({ cmd: 'set_jerk', value: parseFloat(setJerkInput.value) });
   sendCmd({ cmd: 'set_phase_lead', kv: parseFloat(setKv.value) });
 });
 btnSave.addEventListener('click', () => {
   sendCmd({ cmd: 'save' });
+});
+
+// ── Auto-tuner ───────────────────────────────────────────────────────────────
+
+btnAutotuneStop.addEventListener('click', () => {
+  activeTuner?.abort();
+});
+
+btnAutotune.addEventListener('click', () => {
+  const config = {
+    distanceDeg:  parseFloat(inpDistance.value),
+    speedRpm:     parseFloat(inpSpeed.value),
+    accelDps2:    parseFloat(inpAccel.value),
+    microsteps:   currentMicrosteps,
+    currentKp:    parseFloat(setKp.value),
+    currentKd:    parseFloat(setKd.value),
+    currentKv:    parseFloat(setKv.value),
+    currentJerk:  parseFloat(setJerkInput.value),
+    dAlpha:       parseFloat(setDAlpha.value),
+  };
+
+  // Reset UI
+  atLogList.innerHTML    = '';
+  atSummaryList.innerHTML = '';
+  atProgressFill.style.width = '0%';
+  atParamLabel.textContent = 'Starting…';
+  atIterLabel.textContent  = `Step 0/${16}`;
+  autotuneProgress.classList.remove('hidden');
+  autotuneResults.classList.add('hidden');
+
+  // Lock controls during tuning
+  btnAutotune.disabled = true;
+  setSettingsEnabled(false);
+  setMotionEnabled(false);
+
+  const onProgress = (p: TunerProgress) => {
+    atParamLabel.textContent = p.paramLabel;
+    atIterLabel.textContent  = `Step ${p.step}/${p.totalSteps}`;
+    atProgressFill.style.width = `${(p.step / p.totalSteps) * 100}%`;
+    const li = document.createElement('li');
+    li.textContent = p.logLine;
+    atLogList.prepend(li);
+    // Keep last 8 lines
+    while (atLogList.children.length > 8) atLogList.removeChild(atLogList.lastChild!);
+  };
+
+  activeTuner = new AutoTuner(conn, sendCmd, onProgress);
+
+  activeTuner.tune(config).then((results: TuneResult[]) => {
+    // Update GUI inputs with best values
+    for (const r of results) {
+      if (r.param === 'Kp')   setKp.value        = r.to.toFixed(2);
+      if (r.param === 'Kv')   setKv.value        = r.to.toFixed(3);
+      if (r.param === 'Jerk') setJerkInput.value = r.to.toFixed(0);
+    }
+
+    // Show summary
+    autotuneResults.classList.remove('hidden');
+    atSummaryList.innerHTML = '';
+    if (results.length === 0) {
+      const li = document.createElement('li');
+      li.textContent = 'Aborted — no results';
+      li.className = 'unchanged';
+      atSummaryList.appendChild(li);
+    } else {
+      for (const r of results) {
+        const improved = r.metricAfter < r.metricBefore * 0.99;
+        const li = document.createElement('li');
+        li.className = improved ? 'improved' : 'unchanged';
+        li.textContent =
+          `${r.param}: ${r.fromDisplay} → ${r.toDisplay}` +
+          `  (${r.metricLabel}: ${r.metricBefore.toFixed(1)} → ${r.metricAfter.toFixed(1)})`;
+        atSummaryList.appendChild(li);
+      }
+    }
+
+    atParamLabel.textContent = 'Done';
+    atProgressFill.style.width = '100%';
+  }).catch((err: unknown) => {
+    autotuneResults.classList.remove('hidden');
+    atSummaryList.innerHTML = '';
+    const li = document.createElement('li');
+    li.className = 'unchanged';
+    li.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    atSummaryList.appendChild(li);
+    atParamLabel.textContent = 'Failed';
+  }).finally(() => {
+    activeTuner = null;
+    setSettingsEnabled(true);
+    setMotionEnabled(true);
+    btnAutotune.disabled = false;
+  });
 });
 btnApplyTmc.addEventListener('click', () => {
   sendCmd({ cmd: 'set_voltage',        value: parseInt(setVoltage.value, 10) });
@@ -430,9 +543,11 @@ conn.onSettings = (pkt: SettingsPacket): void => {
 
   currentKp = pkt.kp;
   currentKd = pkt.kd;
-  setKp.value = pkt.kp.toFixed(3);
-  setKd.value = pkt.kd.toFixed(4);
-  setKv.value = pkt.kv.toFixed(5);
+  setKp.value     = pkt.kp.toFixed(3);
+  setKd.value     = pkt.kd.toFixed(4);
+  setDAlpha.value     = pkt.d_alpha.toFixed(2);
+  setJerkInput.value  = pkt.jerk.toFixed(0);
+  setKv.value         = pkt.kv.toFixed(5);
 };
 
 // ── Status packet handler ────────────────────────────────────────────────────
@@ -472,8 +587,13 @@ conn.onStatus = (pkt: StatusPacket): void => {
   setBadge(fbHoldActive,  pkt.holdActive,  'ok');
   setBadge(fbHoldSettled, pkt.holdSettled, 'ok');
 
-  // Derive motion state from authoritative STATUS flags
-  if (pkt.isRunning) {
+  // Derive motion state from authoritative STATUS flags.
+  // Guard: a STATUS packet sent just before the planner finished can arrive
+  // after the STOP packet (different send tasks, 100ms vs 1kHz). Suppress
+  // isRunning=true for 500ms after a STOP so it cannot flip 'correcting' back
+  // to 'moving'.
+  const recentStop = stopReceivedAt > 0 && (Date.now() - stopReceivedAt) < 500;
+  if (pkt.isRunning && !recentStop) {
     setMotionState('moving');
   } else if (pkt.holdActive && !pkt.holdSettled) {
     setMotionState('correcting');
@@ -510,15 +630,12 @@ conn.onPacket = (packet: Packet): void => {
     store.push(packet, shouldChart);
     if (shouldChart) _chartDirty = true;
 
-    const ms = store.moveStats;
-    teleMaxLag.textContent  = `${ms.peakLagDeg.toFixed(2)}°`;
-    teleSkipped.textContent = `${ms.skippedDeg.toFixed(2)}°`;
     _chartDirty = true;
 
     // Update hold accuracy gauge if in hold phase
     if (motionState === 'correcting' || motionState === 'holding') {
       updateDeviationGauge(packet.lag);
-      holdPeakDev.textContent = `${ms.holdPeakDevDeg.toFixed(2)}°`;
+      holdPeakDev.textContent = `${store.moveStats.holdPeakDevDeg.toFixed(2)}°`;
     }
   } else {
     stopsReceived++;
@@ -526,9 +643,9 @@ conn.onPacket = (packet: Packet): void => {
 
     // Enter hold phase for deviation tracking
     const isNormalStop = !packet.reason.includes('Fault') && !packet.reason.includes('E-STOP');
+    stopReceivedAt = Date.now();  // always stamp — guards STATUS race for both normal and fault stops
     if (isNormalStop) {
       store.enterHoldPhase();
-      stopReceivedAt = Date.now();
       setMotionState('correcting');
       holdSettleTime.textContent = '…';
       holdSettleTime.classList.remove('dimmed');
@@ -543,9 +660,13 @@ conn.onPacket = (packet: Packet): void => {
     // Populate per-move performance panel (undim values)
     const ms = store.moveStats;
     perfMaxLag.textContent    = `${ms.peakLagDeg.toFixed(2)}°`;
+    perfMeanLag.textContent   = `${ms.meanLagDeg.toFixed(2)}°`;
+    perfStepLoss.textContent  = `${ms.skippedDeg.toFixed(2)}°`;
     perfLagJitter.textContent = `${ms.lagJitterDeg.toFixed(2)}°`;
     perfEffort.textContent    = `${ms.effortPct.toFixed(1)}%`;
     perfMaxLag.classList.remove('dimmed');
+    perfMeanLag.classList.remove('dimmed');
+    perfStepLoss.classList.remove('dimmed');
     perfLagJitter.classList.remove('dimmed');
     perfEffort.classList.remove('dimmed');
 
