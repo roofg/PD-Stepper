@@ -32,7 +32,7 @@ h2 {
   margin-bottom: 14px;
 }
 
-#app { max-width: 1400px; margin: 0 auto; padding: 0 10px 10px; }
+#app { max-width: 1920px; margin: 0 auto; padding: 0 16px 16px; }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 header {
@@ -59,14 +59,16 @@ header {
 /* ── Grid ───────────────────────────────────────────────────────────────── */
 main {
   display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 12px;
+  grid-template-columns: 280px 1fr 340px;
+  gap: 16px;
   align-items: start;
 }
-@media (max-width: 700px) { main { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { main { grid-template-columns: 280px 1fr; } }
+@media (max-width: 700px)  { main { grid-template-columns: 1fr; } }
 
 #settings-pane  { display: flex; flex-direction: column; gap: 12px; }
 #telemetry-pane { display: flex; flex-direction: column; gap: 12px; }
+#queue-pane     { display: flex; flex-direction: column; gap: 12px; }
 
 /* ── Card ───────────────────────────────────────────────────────────────── */
 .card {
@@ -511,4 +513,176 @@ select:disabled { opacity: 0.4; }
   font-size: 11px;
   color: var(--text-dim);
   margin: 6px 0 2px;
+}
+
+/* ── Command entry tabs (Move / Dwell) */
+.entry-type-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.entry-type-tabs .tab {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.entry-type-tabs .tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.btn-add-entry {
+  width: 100%;
+  padding: 5px 0;
+  margin-top: 6px;
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.btn-add-entry:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Queue list */
+#queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 480px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  min-height: 40px;
+}
+#queue-list:empty::after {
+  content: 'No entries — add moves above';
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 16px 0;
+}
+
+.queue-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--text);
+  cursor: grab;
+  user-select: none;
+}
+.queue-entry:active { cursor: grabbing; }
+.queue-entry.drag-over { border-color: var(--accent); border-style: dashed; }
+.queue-entry[data-status="running"] { border-color: var(--green); }
+.queue-entry[data-status="done"]    { opacity: 0.45; }
+.queue-entry[data-status="error"]   { border-color: var(--red); opacity: 0.7; }
+
+.queue-entry .queue-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-entry .queue-status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+.queue-entry[data-status="running"] .queue-status-dot { background: var(--green); animation: pulse 1s infinite; }
+.queue-entry[data-status="done"]    .queue-status-dot { background: var(--green); }
+.queue-entry[data-status="error"]   .queue-status-dot { background: var(--red); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+.queue-entry button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.queue-entry button:hover { color: var(--text); }
+.queue-entry .queue-delete:hover { color: var(--red); }
+
+.queue-controls {
+  display: flex;
+  gap: 8px;
+}
+.queue-controls .btn-apply-group { flex: 1; }
+.queue-controls .btn-loop {
+  flex: 0;
+  padding: 7px 10px;
+  font-size: 16px;
+  line-height: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.queue-controls .btn-loop:hover { border-color: var(--accent); color: var(--text); }
+.queue-controls .btn-loop.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.queue-controls .btn-reset-chart { flex: 0; white-space: nowrap; }
+
+/* ── Per-Move Stats (block stats breakdown) */
+#block-stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--text);
+}
+.block-stat-row {
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.block-stat-row .block-label { min-width: 36px; color: var(--text-dim); font-weight: 600; }
+.block-stat-row .block-values { flex: 1; }
+
+/* ── Queue inline edit */
+.queue-entry.editing {
+  flex-wrap: wrap;
+  cursor: default;
+}
+.queue-edit-fields {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+  margin-top: 4px;
+}
+.queue-edit-fields input {
+  width: 60px;
+  font-size: 10px;
+  padding: 2px 4px;
+}
+.queue-edit-fields button {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
 }

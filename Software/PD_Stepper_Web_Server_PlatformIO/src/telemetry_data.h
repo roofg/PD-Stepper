@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-enum TelemetryType { TELEMETRY_UPDATE, TELEMETRY_STOP };
+enum TelemetryType { TELEMETRY_UPDATE, TELEMETRY_STOP, TELEMETRY_BLOCK_DONE };
 
 struct TelemetryData {
   TelemetryType type;
@@ -20,6 +20,8 @@ struct TelemetryData {
   uint8_t  cs_actual;    // TMC CS_ACTUAL (0–31), cached by DiagnosticsTask
   uint8_t  pwm_scale;    // TMC PWM_SCALE (0–255), cached by DiagnosticsTask
   int16_t  mvel;         // measured encoder velocity (encoder counts/s)
+  uint8_t  blockIndex;   // BLOCK_DONE: 0-based block index within chain
+  uint8_t  totalBlocks;  // BLOCK_DONE: total blocks in chain
 };
 
 #endif

@@ -449,6 +449,8 @@ static void TelemetryTask(void *) {
                     }
                 }
                 Serial1.printf("DBG:STOP_SENT bytes=%u\n", (unsigned)sent);
+            } else if (d.type == TELEMETRY_BLOCK_DONE) {
+                s_telemetry->sendBlockDone(d.blockIndex, d.totalBlocks, d.pos);
             } else {
                 s_telemetry->sendTelemetry(d);
             }
@@ -610,6 +612,16 @@ static void PlannerTask(void *) {
 
             // Carry planner position to next block start (velocity is already live in planner)
             blockStartPos = planner.currentPos;
+
+            // Send BLOCK_DONE marker between chain blocks (not after the last)
+            if (s_teleQueue && bi < nCmds - 1) {
+                TelemetryData bd = {};
+                bd.type = TELEMETRY_BLOCK_DONE;
+                bd.blockIndex = (uint8_t)bi;
+                bd.totalBlocks = (uint8_t)nCmds;
+                bd.pos = (long)(blockStartPos);
+                xQueueSend(s_teleQueue, &bd, pdMS_TO_TICKS(50));
+            }
 
             // Option C streaming hook: if more commands arrive here, append to blocks[] and
             // re-run planChain() over the remaining+new commands for seamless continuation.

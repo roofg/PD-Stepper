@@ -1,10 +1,12 @@
 import 'uplot/dist/uPlot.min.css';
 import { SerialConnection } from './serial';
-import { moveCommand, type Packet, type SettingsPacket, type StatusPacket } from './protocol';
+import { moveCommand, type Packet, type SettingsPacket, type StatusPacket, type BlockDonePacket } from './protocol';
 import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
-import { encToDeg, encToRev, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec } from './units';
+import { encToDeg, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec } from './units';
 import { AutoTuner, type TuneResult, type TunerProgress } from './tuner';
+import { QueueStore, type QueueEntry } from './queue-store';
+import { QueueRunner } from './queue-runner';
 
 const conn  = new SerialConnection();
 const store = new TelemetryStore();
@@ -40,6 +42,22 @@ const devNeedle       = document.getElementById('dev-needle')         as HTMLDiv
 const holdDev         = document.getElementById('hold-dev')           as HTMLSpanElement;
 const holdPeakDev     = document.getElementById('hold-peak-dev')      as HTMLSpanElement;
 const holdSettleTime  = document.getElementById('hold-settle-time')   as HTMLSpanElement;
+
+// Queue pane
+const tabMove         = document.getElementById('tab-move')           as HTMLButtonElement;
+const tabDwell        = document.getElementById('tab-dwell')          as HTMLButtonElement;
+const moveFields      = document.getElementById('move-fields')        as HTMLDivElement;
+const dwellFields     = document.getElementById('dwell-fields')       as HTMLDivElement;
+const inpDwell        = document.getElementById('inp-dwell')          as HTMLInputElement;
+const btnAddMove      = document.getElementById('btn-add-move')       as HTMLButtonElement;
+const btnAddDwell     = document.getElementById('btn-add-dwell')      as HTMLButtonElement;
+const queueList       = document.getElementById('queue-list')         as HTMLDivElement;
+const queueCount      = document.getElementById('queue-count')        as HTMLSpanElement;
+const btnRunQueue     = document.getElementById('btn-run-queue')      as HTMLButtonElement;
+const btnLoopQueue    = document.getElementById('btn-loop-queue')     as HTMLButtonElement;
+const btnClearQueue   = document.getElementById('btn-clear-queue')    as HTMLButtonElement;
+const blockStatsSection = document.getElementById('block-stats-section') as HTMLElement;
+const blockStatsList  = document.getElementById('block-stats-list')   as HTMLDivElement;
 
 // USB link card
 const linkUpdates     = document.getElementById('link-updates')       as HTMLSpanElement;
@@ -118,6 +136,35 @@ let currentMicrosteps = 32;  // from SETTINGS packet, used for deg→µstep comm
 let linkInterval: ReturnType<typeof setInterval> | null = null;
 let activeTuner: AutoTuner | null = null;
 
+// ── Queue ──────────────────────────────────────────────────────────────────────
+
+const queueStore = new QueueStore();
+const queueRunner = new QueueRunner(queueStore, {
+  write: (cmd) => conn.write(cmd),
+  getMicrosteps: () => currentMicrosteps,
+  onStateChange: (state) => {
+    const running = state !== 'idle';
+    btnRunQueue.disabled = running || queueStore.length === 0;
+    btnClearQueue.disabled = running;
+    btnAddMove.disabled = running;
+    btnAddDwell.disabled = running;
+    // Disable direct move during queue execution
+    btnMove.disabled = running;
+    if (running && state === 'sending') {
+      resetPerfAndHold();
+      store.clear();
+      chart.update(store);
+      setMotionState('moving');
+    }
+  },
+  onComplete: () => {
+    renderBlockStats();
+  },
+  onAbort: (_reason) => {
+    renderBlockStats();
+  },
+});
+
 // Chart rendering is decoupled from packet arrival via requestAnimationFrame.
 // Packets arrive at 100 Hz; the browser renders at ~60 Hz. Setting this flag
 // on each packet and consuming it in the rAF loop means chart.update() is
@@ -148,6 +195,7 @@ function setMotionEnabled(on: boolean): void {
   inpSpeed.disabled    = !on;
   inpAccel.disabled    = !on;
   chkAbs.disabled      = !on;
+  btnRunQueue.disabled = !on || queueStore.length === 0;
 }
 
 function setSettingsEnabled(on: boolean): void {
@@ -341,6 +389,7 @@ btnConnect.addEventListener('click', () => {
 
 btnEstop.addEventListener('click', () => {
   sendCmd({ cmd: 'estop' });
+  if (queueRunner.isRunning) queueRunner.abort('E-STOP (GUI)');
 });
 
 btnResetChart.addEventListener('click', () => {
@@ -348,6 +397,211 @@ btnResetChart.addEventListener('click', () => {
   chart.resetZoom();   // clear zoom + Y seed → full auto
   chart.update(store);
 });
+
+// ── Queue UI ────────────────────────────────────────────────────────────────
+
+// Tab switching (Move / Dwell)
+tabMove.addEventListener('click', () => {
+  tabMove.classList.add('active');
+  tabDwell.classList.remove('active');
+  moveFields.classList.remove('hidden');
+  dwellFields.classList.add('hidden');
+});
+tabDwell.addEventListener('click', () => {
+  tabDwell.classList.add('active');
+  tabMove.classList.remove('active');
+  dwellFields.classList.remove('hidden');
+  moveFields.classList.add('hidden');
+});
+
+// Add entry buttons
+btnAddMove.addEventListener('click', () => {
+  queueStore.addMove({
+    distanceDeg: parseFloat(inpDistance.value) || 0,
+    speedRPM:    parseFloat(inpSpeed.value) || 112,
+    accelDPS2:   parseFloat(inpAccel.value) || 500,
+    absolute:    chkAbs.checked,
+  });
+});
+btnAddDwell.addEventListener('click', () => {
+  queueStore.addDwell({ durationMs: parseFloat(inpDwell.value) || 500 });
+});
+
+// Run queue
+btnRunQueue.addEventListener('click', () => {
+  if (queueRunner.isRunning) return;
+  movesSent++;
+  blockStatsSection.classList.add('hidden');
+  queueRunner.start();
+});
+
+// Loop toggle
+btnLoopQueue.addEventListener('click', () => {
+  queueRunner.loop = !queueRunner.loop;
+  btnLoopQueue.classList.toggle('active', queueRunner.loop);
+});
+
+// Clear queue
+btnClearQueue.addEventListener('click', () => {
+  queueStore.clear();
+  blockStatsSection.classList.add('hidden');
+});
+
+// Queue rendering
+function renderQueue(): void {
+  queueCount.textContent = `${queueStore.length} entries`;
+  btnRunQueue.disabled = queueStore.length === 0 || queueRunner.isRunning || !conn.isConnected;
+
+  queueList.innerHTML = '';
+  let moveNum = 0, dwellNum = 0;
+
+  for (let i = 0; i < queueStore.entries.length; i++) {
+    const entry = queueStore.entries[i];
+    const div = document.createElement('div');
+    div.className = 'queue-entry';
+    div.dataset.id = entry.id;
+    div.dataset.status = entry.status;
+    div.draggable = true;
+
+    let label: string;
+    if (entry.type === 'move') {
+      moveNum++;
+      const p = entry.params;
+      const sign = p.absolute ? 'abs ' : (p.distanceDeg >= 0 ? '+' : '');
+      label = `M${moveNum}: ${sign}${p.distanceDeg.toFixed(1)}° @ ${p.speedRPM} RPM, ${p.accelDPS2}°/s²`;
+    } else {
+      dwellNum++;
+      label = `D${dwellNum}: Wait ${entry.params.durationMs} ms`;
+    }
+
+    div.innerHTML = `
+      <span class="queue-label">${label}</span>
+      <span class="queue-status-dot"></span>
+      <button class="queue-edit" title="Edit">&#9998;</button>
+      <button class="queue-delete" title="Delete">&times;</button>
+    `;
+
+    // Delete handler
+    div.querySelector('.queue-delete')!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      queueStore.remove(entry.id);
+    });
+
+    // Edit handler
+    div.querySelector('.queue-edit')!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      startInlineEdit(div, entry);
+    });
+
+    // Drag handlers
+    div.addEventListener('dragstart', (e) => {
+      e.dataTransfer!.setData('text/plain', String(i));
+      e.dataTransfer!.effectAllowed = 'move';
+    });
+    div.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'move';
+      div.classList.add('drag-over');
+    });
+    div.addEventListener('dragleave', () => div.classList.remove('drag-over'));
+    div.addEventListener('drop', (e) => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      const fromIdx = parseInt(e.dataTransfer!.getData('text/plain'), 10);
+      queueStore.move(fromIdx, i);
+    });
+
+    queueList.appendChild(div);
+  }
+}
+
+function startInlineEdit(div: HTMLDivElement, entry: QueueEntry): void {
+  if (queueRunner.isRunning) return;
+  div.classList.add('editing');
+
+  const fields = document.createElement('div');
+  fields.className = 'queue-edit-fields';
+
+  if (entry.type === 'move') {
+    const p = entry.params;
+    fields.innerHTML = `
+      <input type="number" value="${p.distanceDeg}" step="0.1" title="Distance (°)" />
+      <input type="number" value="${p.speedRPM}" step="1" min="1" title="Speed (RPM)" />
+      <input type="number" value="${p.accelDPS2}" step="10" min="10" title="Accel (°/s²)" />
+      <button>OK</button>
+    `;
+    const inputs = fields.querySelectorAll('input');
+    fields.querySelector('button')!.addEventListener('click', () => {
+      queueStore.updateEntry(entry.id, {
+        distanceDeg: parseFloat(inputs[0].value) || 0,
+        speedRPM:    parseFloat(inputs[1].value) || 112,
+        accelDPS2:   parseFloat(inputs[2].value) || 500,
+      });
+    });
+  } else {
+    fields.innerHTML = `
+      <input type="number" value="${entry.params.durationMs}" step="100" min="0" title="Duration (ms)" />
+      <button>OK</button>
+    `;
+    const input = fields.querySelector('input')!;
+    fields.querySelector('button')!.addEventListener('click', () => {
+      queueStore.updateEntry(entry.id, { durationMs: parseFloat(input.value) || 500 });
+    });
+  }
+
+  // Escape to cancel
+  fields.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') renderQueue();
+  });
+
+  div.appendChild(fields);
+}
+
+function renderBlockStats(): void {
+  const stats = store.blockStats;
+  if (stats.length === 0) { blockStatsSection.classList.add('hidden'); return; }
+
+  // Also snapshot the final block (STOP captures it)
+  // The last block's stats are the current moveStats (not yet snapshotted by BLOCK_DONE)
+  const finalStats = store.moveStats;
+
+  blockStatsSection.classList.remove('hidden');
+  blockStatsList.innerHTML = '';
+
+  // Combine snapshotted blocks + final block
+  const allBlocks = [...stats];
+  // Add final block only if BLOCK_DONE didn't already capture it
+  if (allBlocks.length === 0 || allBlocks[allBlocks.length - 1].blockIndex < allBlocks.length) {
+    allBlocks.push({
+      blockIndex: allBlocks.length,
+      peakLagCounts: finalStats.peakLagCounts,
+      meanLagCounts: finalStats.meanLagCounts,
+      skippedCounts: finalStats.skippedCounts,
+      lagJitter: finalStats.lagJitter,
+      effortPct: finalStats.effortPct,
+      peakLagDeg: finalStats.peakLagDeg,
+      meanLagDeg: finalStats.meanLagDeg,
+      skippedDeg: finalStats.skippedDeg,
+      lagJitterDeg: finalStats.lagJitterDeg,
+    });
+  }
+
+  for (const bs of allBlocks) {
+    const row = document.createElement('div');
+    row.className = 'block-stat-row';
+    row.innerHTML = `
+      <span class="block-label">M${bs.blockIndex + 1}</span>
+      <span class="block-values">
+        lag ${bs.peakLagDeg.toFixed(2)}°pk / ${bs.meanLagDeg.toFixed(2)}°avg
+        &nbsp; loss ${bs.skippedDeg.toFixed(2)}°
+        &nbsp; effort ${bs.effortPct.toFixed(1)}%
+      </span>
+    `;
+    blockStatsList.appendChild(row);
+  }
+}
+
+queueStore.onChange = renderQueue;
 
 // ── Move command ─────────────────────────────────────────────────────────────
 
@@ -618,9 +872,7 @@ conn.onStatus = (pkt: StatusPacket): void => {
 conn.onPacket = (packet: Packet): void => {
   if (packet.type === 'update') {
     // Display in degrees / RPM (encoder-count-independent units)
-    const measDeg = encToDeg(packet.meas);
-    const measRev = encToRev(packet.meas);
-    teleMeas.textContent    = `${measDeg.toFixed(1)}° (${measRev.toFixed(2)} rev)`;
+    teleMeas.textContent    = `${encToDeg(packet.meas).toFixed(1)}°`;
     teleTarget.textContent  = `${encToDeg(packet.target).toFixed(1)}°`;
     teleVel.textContent     = `${encPerSecToRPM(packet.vel).toFixed(1)} RPM`;
     teleLag.textContent     = `${encToDeg(packet.lag).toFixed(2)}°`;
@@ -637,7 +889,7 @@ conn.onPacket = (packet: Packet): void => {
       updateDeviationGauge(packet.lag);
       holdPeakDev.textContent = `${store.moveStats.holdPeakDevDeg.toFixed(2)}°`;
     }
-  } else {
+  } else if (packet.type === 'stop') {
     stopsReceived++;
     teleMeas.textContent = `${encToDeg(packet.pos).toFixed(1)}°`;
 
@@ -670,6 +922,16 @@ conn.onPacket = (packet: Packet): void => {
     perfLagJitter.classList.remove('dimmed');
     perfEffort.classList.remove('dimmed');
 
+    // Notify queue runner (no-op if not running a queue)
+    queueRunner.onStop(packet.reason);
+
     updateLinkStats();
   }
+};
+
+// ── Block-done handler (chain boundary marker) ──────────────────────────────
+
+conn.onBlockDone = (pkt: BlockDonePacket): void => {
+  store.snapshotBlock(pkt.blockIndex);
+  queueRunner.onBlockDone(pkt.blockIndex);
 };

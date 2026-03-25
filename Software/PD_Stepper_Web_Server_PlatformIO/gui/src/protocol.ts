@@ -11,16 +11,18 @@
  *   STATUS   0xAA 0xDD  20 bytes total
  */
 
-const SYNC       = 0xaa;
-const UPDATE_T   = 0xbb;
-const STOP_T     = 0xcc;
-const SETTINGS_T = 0xee;
-const STATUS_T   = 0xdd;
+const SYNC         = 0xaa;
+const UPDATE_T     = 0xbb;
+const STOP_T       = 0xcc;
+const SETTINGS_T   = 0xee;
+const STATUS_T     = 0xdd;
+const BLOCK_DONE_T = 0xff;
 
-const UPDATE_LEN   = 33;
-const STOP_LEN     = 38;
-const SETTINGS_LEN = 25;
-const STATUS_LEN   = 20;
+const UPDATE_LEN     = 33;
+const STOP_LEN       = 38;
+const SETTINGS_LEN   = 25;
+const STATUS_LEN     = 20;
+const BLOCK_DONE_LEN = 10;
 
 export interface TelemetryUpdate {
   type: 'update';
@@ -42,6 +44,13 @@ export interface StopPacket {
   type:   'stop';
   pos:    number;  // int32, final position in encoder counts
   reason: string;  // up to 32-char ASCII
+}
+
+export interface BlockDonePacket {
+  type: 'block_done';
+  blockIndex: number;   // 0-based block within chain
+  totalBlocks: number;  // total blocks in chain
+  pos: number;          // int32, encoder counts at block end
 }
 
 export type Packet = TelemetryUpdate | StopPacket;
@@ -108,9 +117,10 @@ export interface LinkStats {
 
 export class PacketParser {
   private buf: number[] = [];
-  onPacket:   ((pkt: Packet) => void) | null = null;
-  onSettings: ((pkt: SettingsPacket) => void) | null = null;
-  onStatus:   ((pkt: StatusPacket)   => void) | null = null;
+  onPacket:    ((pkt: Packet) => void) | null = null;
+  onSettings:  ((pkt: SettingsPacket) => void) | null = null;
+  onStatus:    ((pkt: StatusPacket)   => void) | null = null;
+  onBlockDone: ((pkt: BlockDonePacket) => void) | null = null;
 
   private _stats: LinkStats = this._zeroStats();
   private _lastUpdateWallMs = 0;
@@ -280,6 +290,27 @@ export class PacketParser {
         };
         this.onStatus?.(status);
 
+      } else if (type === BLOCK_DONE_T) {
+        if (this.buf.length < BLOCK_DONE_LEN) return;
+        // Validate XOR checksum over bytes [2..7]
+        let cs = 0;
+        for (let i = 2; i < 8; i++) cs ^= this.buf[i];
+        if (cs !== this.buf[8]) {
+          this._stats.checksumErrors++;
+          if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
+          this.buf.shift();
+          continue;
+        }
+        this._wasDiscarding = false;
+        const pkt = this.buf.splice(0, BLOCK_DONE_LEN);
+        const dv = new DataView(new Uint8Array(pkt).buffer);
+        this.onBlockDone?.({
+          type:        'block_done',
+          blockIndex:  pkt[2],
+          totalBlocks: pkt[3],
+          pos:         dv.getInt32(4, true),
+        });
+
       } else {
         if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
         this.buf.shift(); // unknown second byte — skip sync and rescan
@@ -293,8 +324,9 @@ export function moveCommand(
   speed:    number,
   accel:    number,
   abs = false,
+  chain = false,
 ): string {
-  return JSON.stringify({ cmd: 'move', distance, speed, accel, abs }) + '\n';
+  return JSON.stringify({ cmd: 'move', distance, speed, accel, abs, chain }) + '\n';
 }
 
 export function setCurrentCommand(percent: number): string {

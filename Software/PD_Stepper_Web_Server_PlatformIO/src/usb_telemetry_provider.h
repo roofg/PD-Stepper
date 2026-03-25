@@ -111,6 +111,25 @@ public:
     if (guard) USBSerial.write(buf, sizeof(buf));
   }
 
+  size_t sendBlockDone(uint8_t blockIdx, uint8_t totalBlocks, long pos) override {
+    uint8_t buf[10];
+    buf[0] = 0xAA;
+    buf[1] = 0xFF;  // BLOCK_DONE marker
+    buf[2] = blockIdx;
+    buf[3] = totalBlocks;
+
+    int32_t p = (int32_t)pos;
+    memcpy(&buf[4], &p, 4);
+
+    uint8_t chk = 0;
+    for (int i = 2; i < 8; i++) chk ^= buf[i];
+    buf[8] = chk;
+    buf[9] = 0x00;  // reserved
+
+    UsbWriteGuard guard;
+    return guard ? USBSerial.write(buf, sizeof(buf)) : 0;
+  }
+
   size_t sendStop(const char *reason, long pos) override {
     uint8_t buf[38];
     buf[0] = 0xAA;

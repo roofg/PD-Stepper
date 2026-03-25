@@ -15,6 +15,20 @@ import { encToDeg } from './units';
 const MAX_POINTS = 12000; // ~2 min at 100 Hz
 const LAG_WINDOW = 20;   // samples for rolling jitter stdev
 
+/** Per-block stats snapshot, captured at each BLOCK_DONE boundary. */
+export interface BlockStats {
+  blockIndex:    number;
+  peakLagCounts: number;
+  meanLagCounts: number;
+  skippedCounts: number;
+  lagJitter:     number;
+  effortPct:     number;
+  peakLagDeg:    number;
+  meanLagDeg:    number;
+  skippedDeg:    number;
+  lagJitterDeg:  number;
+}
+
 /** Per-move derived metrics, computed client-side from the UPDATE stream. */
 export interface MoveStats {
   skippedCounts:     number;  // (pos−pos₀) − (meas−meas₀): divergence (encoder counts)
@@ -57,6 +71,7 @@ export class TelemetryStore {
   private _lagWindow: number[] = [];
   private _holdPhase = false;
   private _holdPeakDevCounts = 0;
+  private _blockStats: BlockStats[] = [];
 
   get length(): number { return this._t.length; }
 
@@ -111,6 +126,7 @@ export class TelemetryStore {
     this._lagWindow = [];
     this._holdPhase = false;
     this._holdPeakDevCounts = 0;
+    this._blockStats = [];
     this._t.length= this._meas.length = this._target.length =
     this._lag.length = this._vel.length = this._accel.length =
     this._pos.length = this._dist.length = this._stallguard.length =
@@ -121,6 +137,46 @@ export class TelemetryStore {
   enterHoldPhase(): void {
     this._holdPhase = true;
     this._holdPeakDevCounts = 0;
+  }
+
+  /** Finalized per-block stats from BLOCK_DONE markers. */
+  get blockStats(): readonly BlockStats[] { return this._blockStats; }
+
+  /**
+   * Snapshot current accumulators as a completed block's stats, then reset
+   * accumulators for the next block. Chart arrays are NOT reset — they span
+   * the entire chain for continuous plotting.
+   */
+  snapshotBlock(blockIndex: number): void {
+    const pkt = this._lastPkt;
+    const meanLag = this._lagSampleCount > 0 ? this._lagAbsSum / this._lagSampleCount : 0;
+    const skipped = pkt ? (pkt.pos - pkt.meas) - (this._pos0 - this._meas0) : 0;
+    const jitter = this._lagJitter();
+    const effort = pkt ? Math.abs(pkt.lag) / Math.max(Math.abs(pkt.vel), 1) * 100 : 0;
+
+    this._blockStats.push({
+      blockIndex,
+      peakLagCounts: this._peakLagCounts,
+      meanLagCounts: meanLag,
+      skippedCounts: skipped,
+      lagJitter:     jitter,
+      effortPct:     effort,
+      peakLagDeg:    encToDeg(this._peakLagCounts),
+      meanLagDeg:    encToDeg(meanLag),
+      skippedDeg:    encToDeg(Math.abs(skipped)),
+      lagJitterDeg:  encToDeg(jitter),
+    });
+
+    // Reset accumulators for next block — re-baseline divergence from current position
+    this._peakSkippedCounts = 0;
+    this._peakLagCounts = 0;
+    this._lagAbsSum = 0;
+    this._lagSampleCount = 0;
+    this._lagWindow = [];
+    if (pkt) {
+      this._pos0 = pkt.pos;
+      this._meas0 = pkt.meas;
+    }
   }
 
   /**

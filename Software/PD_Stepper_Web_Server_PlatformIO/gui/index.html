@@ -212,36 +212,13 @@
             </div>
           </section>
 
-          <!-- Save to Flash — bottom of settings pane -->
+          <!-- Save to Flash -->
           <button id="btn-save" class="pane-save" disabled>💾 Save to Flash</button>
 
         </div><!-- #settings-pane -->
 
-        <!-- RIGHT: Telemetry pane -->
+        <!-- MIDDLE: Telemetry pane (widest) -->
         <div id="telemetry-pane">
-
-          <!-- Move Command -->
-          <section class="card" id="move-section">
-            <h2>Move Command</h2>
-            <form id="move-form">
-              <label>Distance (°)
-                <input type="number" id="inp-distance" value="180" step="0.1" />
-              </label>
-              <label>Speed (RPM)
-                <input type="number" id="inp-speed" value="112" step="1" min="1" max="480" />
-              </label>
-              <label>Accel (°/s²)
-                <input type="number" id="inp-accel" value="500" step="10" min="10" />
-              </label>
-              <div class="form-actions">
-                <label>
-                  <input type="checkbox" id="chk-abs" />
-                  Absolute
-                </label>
-                <button type="submit" id="btn-move" disabled>▶ Move</button>
-              </div>
-            </form>
-          </section>
 
           <!-- Live Telemetry -->
           <section class="card" id="telemetry-section">
@@ -249,11 +226,11 @@
             <div id="tele-status" class="status stopped">● IDLE</div>
             <div class="metrics">
               <div class="metric">
-                <span class="metric-label">Position (measured)</span>
+                <span class="metric-label">Position encoder (°)</span>
                 <span class="metric-value" id="tele-meas">—</span>
               </div>
               <div class="metric">
-                <span class="metric-label">Position (target)</span>
+                <span class="metric-label">Position target (°)</span>
                 <span class="metric-value" id="tele-target">—</span>
               </div>
               <div class="metric">
@@ -270,15 +247,15 @@
               <h3 class="perf-heading">Move Performance</h3>
               <div class="metrics">
                 <div class="metric">
-                  <span class="metric-label">Max Lag</span>
+                  <span class="metric-label">Max Lag (°)</span>
                   <span class="metric-value" id="perf-max-lag">—</span>
                 </div>
                 <div class="metric">
-                  <span class="metric-label">Mean Lag</span>
+                  <span class="metric-label">Mean Lag (°)</span>
                   <span class="metric-value" id="perf-mean-lag">—</span>
                 </div>
                 <div class="metric">
-                  <span class="metric-label">Step Loss</span>
+                  <span class="metric-label">Step Loss (°)</span>
                   <span class="metric-value" id="perf-step-loss">—</span>
                 </div>
                 <div class="metric">
@@ -326,6 +303,7 @@
               </div>
             </div>
           </section>
+
           <section class="card" id="chart-section">
             <h2>Telemetry Chart <span class="chart-hint">click legend to toggle series</span>
               <button id="btn-reset-chart" class="btn-reset-chart" title="Clear chart data">↺ Reset</button>
@@ -402,6 +380,65 @@
           </section>
 
         </div><!-- #telemetry-pane -->
+
+        <!-- RIGHT: Command + Queue pane -->
+        <div id="queue-pane">
+
+          <!-- Command entry (Move / Dwell) -->
+          <section class="card" id="add-entry-section">
+            <h2>Command</h2>
+            <div class="entry-type-tabs">
+              <button class="tab active" data-type="move" id="tab-move">Move</button>
+              <button class="tab" data-type="dwell" id="tab-dwell">Dwell</button>
+            </div>
+            <div id="move-fields">
+              <form id="move-form">
+                <label>Distance (°)
+                  <input type="number" id="inp-distance" value="180" step="0.1" />
+                </label>
+                <label>Speed (RPM)
+                  <input type="number" id="inp-speed" value="112" step="1" min="1" max="480" />
+                </label>
+                <label>Accel (°/s²)
+                  <input type="number" id="inp-accel" value="500" step="10" min="10" />
+                </label>
+                <div class="form-actions">
+                  <label>
+                    <input type="checkbox" id="chk-abs" />
+                    Absolute
+                  </label>
+                  <button type="submit" id="btn-move" disabled>&#9654; Move</button>
+                </div>
+              </form>
+              <button id="btn-add-move" class="btn-add-entry">+ Add to Queue</button>
+            </div>
+            <div id="dwell-fields" class="hidden">
+              <label>Duration (ms)
+                <input type="number" id="inp-dwell" value="500" step="100" min="0" />
+              </label>
+              <button id="btn-add-dwell" class="btn-add-entry">+ Add to Queue</button>
+            </div>
+          </section>
+
+          <!-- Queue list -->
+          <section class="card" id="queue-section">
+            <h2>Queue <span id="queue-count" class="chart-hint">0 entries</span></h2>
+            <div id="queue-list"></div>
+            <div class="queue-controls">
+              <button id="btn-run-queue" class="btn-apply-group" disabled>&#9654; Run Queue</button>
+              <button id="btn-loop-queue" class="btn-loop" title="Loop queue">&#x21BB;</button>
+              <button id="btn-clear-queue" class="btn-reset-chart">Clear</button>
+            </div>
+          </section>
+
+          <!-- Per-Move Stats (shown during/after queue run) -->
+          <section class="card hidden" id="block-stats-section">
+            <h2>Per-Move Stats</h2>
+            <div id="block-stats-list"></div>
+          </section>
+
+        </div><!-- #queue-pane -->
+
       </main>
     </div>
 
