@@ -93,6 +93,12 @@ void triggerEstop();
 // Only safe to call when isRunning() is false and no hold is active.
 void resetPositions();
 
+// Re-zero the position coordinate system without clearing hold state.
+// Call after encoder::resetPosition(): resets g_meas_pos, g_target_pos,
+// g_hold_target to 0 but leaves g_hold_active unchanged so the control
+// task continues sending UPDATE packets at the new zero.
+void reZero();
+
 // Send a HOMING_DONE packet (0xAE) via USBSerial.
 // result: 0=ok 1=timeout 2=instant_stall 3=grinding 4=estop
 // sgMinFast/sgMinSlow: minimum SG_RESULT seen during each probe (0xFFFF = stage not reached)

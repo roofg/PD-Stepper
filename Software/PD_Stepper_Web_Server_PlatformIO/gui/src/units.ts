@@ -73,3 +73,34 @@ export function rpmToMicrostepsPerSec(rpm: number, usteps: number): number {
 export function stepsPerSecToRPM(sps: number, usteps: number): number {
   return sps / (FULL_STEPS_PER_REV * usteps) * 60;
 }
+
+// ── Linear (mm) conversions ─────────────────────────────────────────────────
+
+/** Encoder counts → mm given travel per motor revolution. */
+export function encToMm(counts: number, mmPerRev: number): number {
+  return (counts / COUNTS_PER_REV) * mmPerRev;
+}
+/** mm → degrees (internal storage / command bridge). */
+export function mmToDeg(mm: number, mmPerRev: number): number {
+  return (mm / mmPerRev) * 360;
+}
+/** Degrees → mm (display bridge). */
+export function degToMm(deg: number, mmPerRev: number): number {
+  return (deg / 360) * mmPerRev;
+}
+/** Encoder counts/s → mm/s. */
+export function encPerSecToMmPerSec(cps: number, mmPerRev: number): number {
+  return (cps / COUNTS_PER_REV) * mmPerRev;
+}
+/** mm/s → RPM. */
+export function mmPerSecToRpm(mmps: number, mmPerRev: number): number {
+  return (mmps / mmPerRev) * 60;
+}
+/** mm/s² → deg/s². */
+export function mmPerSec2ToDegPerSec2(mmps2: number, mmPerRev: number): number {
+  return (mmps2 / mmPerRev) * 360;
+}
+/** RPM → mm/s (for displaying speed settings in linear mode). */
+export function rpmToMmPerSec(rpm: number, mmPerRev: number): number {
+  return (rpm / 60) * mmPerRev;
+}

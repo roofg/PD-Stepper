@@ -17,6 +17,12 @@ export interface RunnerCallbacks {
   write: (cmd: string) => Promise<void>;
   /** Get current microstep setting for unit conversion. */
   getMicrosteps: () => number;
+  /** Current encoder position in degrees — used as base for the first move in a
+   *  chain so relative moves are accumulated as a float and sent as absolute,
+   *  avoiding per-move microstep rounding accumulation. */
+  getStartPosDeg: () => number;
+  /** Report the accumulated commanded position (degrees) for DRO display. */
+  onCommandedPos: (deg: number) => void;
   /** Called when runner state changes. */
   onStateChange: (state: RunnerState) => void;
   /** Called when the entire queue finishes (all groups done). */
@@ -135,17 +141,32 @@ export class QueueRunner {
       // Mark first entry as running
       this._store.setStatus(group.entries[0].id, 'running');
 
+      // Accumulate commanded position as float so per-move rounding does not
+      // stack up. Each move (relative or absolute) is sent as an absolute
+      // microstep target derived from the float accumulator, meaning the
+      // rounding error across N moves is at most ½ microstep — not N × ½.
+      let accDeg = this._cb.getStartPosDeg();
+
       // Send all moves in the group
       const promises: Promise<void>[] = [];
       for (let i = 0; i < group.entries.length; i++) {
         const e = group.entries[i];
         const isLast = i === group.entries.length - 1;
+
+        if (e.params.absolute) {
+          accDeg = e.params.distanceDeg;  // absolute: set accumulator to target
+        } else {
+          accDeg += e.params.distanceDeg; // relative: accumulate float
+        }
+
+        this._cb.onCommandedPos(accDeg);  // update DRO commanded display
+
         const cmd = moveCommand(
-          degToMicrosteps(e.params.distanceDeg, usteps),
+          degToMicrosteps(accDeg, usteps),  // always absolute after accumulation
           rpmToStepsPerSec(e.params.speedRPM, usteps),
           degPerSec2ToStepsPerSec2(e.params.accelDPS2, usteps),
-          e.params.absolute,
-          !isLast,  // chain=true for all except last
+          true,      // absolute — prevents microstep-rounding accumulation
+          !isLast,   // chain=true for all except last
         );
         promises.push(this._cb.write(cmd));
       }

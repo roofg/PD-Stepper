@@ -730,3 +730,40 @@ select:disabled { opacity: 0.4; }
   border-radius: 3px;
   cursor: pointer;
 }
+
+/* ── Linear mode / DRO ──────────────────────────────────────────────────────── */
+
+#linear-mode-section { display: flex; align-items: center; gap: 14px; }
+#lbl-mm-per-rev { display: none; }
+#lbl-mm-per-rev.visible { display: flex; }
+
+/* DRO large position readout */
+.dro-readout {
+  font-family: var(--mono);
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 16px;
+  text-align: center;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+
+/* Commanded position — small dim label below the large DRO readout */
+.dro-commanded {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: right;
+  margin-top: -6px;
+  margin-bottom: 8px;
+  letter-spacing: 0.02em;
+}
+
+/* Go-to row: input + button side by side */
+.dro-goto-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.dro-goto-row input { flex: 1; }
+.dro-goto-row button { padding: 7px 16px; white-space: nowrap; }

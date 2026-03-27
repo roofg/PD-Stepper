@@ -427,6 +427,15 @@ void processSerialCommands() {
               }
             }
 
+          } else if (strcmp(cmd, "reset_position") == 0) {
+            if (motion::isRunning()) {
+              Serial1.println("ERR: 'reset_position' rejected — motion in progress");
+            } else {
+              encoder::resetPosition();
+              motion::reZero();
+              Serial1.println("Position reset to zero");
+            }
+
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();
             Serial1.println("Settings saved to flash");

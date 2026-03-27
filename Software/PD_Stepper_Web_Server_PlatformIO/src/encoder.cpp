@@ -8,6 +8,7 @@ namespace encoder {
 static volatile signed long total_encoder_counts = 0;
 static int prev_raw_counts = 0;
 static signed long revolutions = 0;
+static signed long zero_offset = 0; // absolute counts at last resetPosition()
 static SemaphoreHandle_t encoderMutex = NULL;
 static TaskHandle_t encoderTaskHandle = NULL;
 
@@ -52,7 +53,7 @@ void read() {
     }
 
     prev_raw_counts = raw_counts;
-    total_encoder_counts = raw_counts + (4096 * revolutions);
+    total_encoder_counts = (raw_counts + (4096 * revolutions)) - zero_offset;
     xSemaphoreGive(encoderMutex);
   }
 }
@@ -72,9 +73,12 @@ signed long getTotalCounts() { return total_encoder_counts; }
 
 void resetPosition() {
   if (xSemaphoreTake(encoderMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-    revolutions = 0;
+    // Capture current absolute position as the new zero reference.
+    // revolutions and prev_raw_counts are left intact so read() continues
+    // to track wrap-arounds correctly; zero_offset makes future reads
+    // return counts relative to this point.
+    zero_offset = prev_raw_counts + (4096 * revolutions);
     total_encoder_counts = 0;
-    // prev_raw_counts stays — next read() computes delta correctly
     xSemaphoreGive(encoderMutex);
   }
 }

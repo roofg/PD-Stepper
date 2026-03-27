@@ -3,7 +3,7 @@ import { SerialConnection } from './serial';
 import { moveCommand, type Packet, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket } from './protocol';
 import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
-import { encToDeg, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec } from './units';
+import { encToDeg, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec, encToMm, mmToDeg, degToMm, encPerSecToMmPerSec, mmPerSecToRpm, mmPerSec2ToDegPerSec2, rpmToMmPerSec } from './units';
 import { AutoTuner, type TuneResult, type TunerProgress } from './tuner';
 import { QueueStore, type QueueEntry } from './queue-store';
 import { QueueRunner } from './queue-runner';
@@ -59,11 +59,37 @@ const btnClearQueue   = document.getElementById('btn-clear-queue')    as HTMLBut
 const blockStatsSection = document.getElementById('block-stats-section') as HTMLElement;
 const blockStatsList  = document.getElementById('block-stats-list')   as HTMLDivElement;
 
-// Jog controls
+// Jog / Position Control
 const btnJogNeg       = document.getElementById('btn-jog-neg')         as HTMLButtonElement;
 const btnJogPos       = document.getElementById('btn-jog-pos')         as HTMLButtonElement;
 const inpJogSpeed     = document.getElementById('inp-jog-speed')       as HTMLInputElement;
-const jogStepBtns     = document.querySelectorAll<HTMLButtonElement>('.jog-step');
+const jogStepSizesDiv = document.getElementById('jog-step-sizes')      as HTMLDivElement;
+const droPosition     = document.getElementById('dro-position')        as HTMLDivElement;
+const droCommanded    = document.getElementById('dro-commanded')       as HTMLDivElement;
+const inpGotoPos      = document.getElementById('inp-goto-pos')        as HTMLInputElement;
+const btnGoto         = document.getElementById('btn-goto')            as HTMLButtonElement;
+const btnSetZero      = document.getElementById('btn-set-zero')        as HTMLButtonElement;
+const lblJogSpeed     = document.getElementById('lbl-jog-speed')       as HTMLLabelElement;
+
+// Linear mode controls
+const chkLinearMode   = document.getElementById('chk-linear-mode')    as HTMLInputElement;
+const inpMmPerRev     = document.getElementById('inp-mm-per-rev')      as HTMLInputElement;
+const lblMmPerRev     = document.getElementById('lbl-mm-per-rev')      as HTMLLabelElement;
+
+// Telemetry metric labels (unit-switchable)
+const lblTeleMeas      = document.getElementById('lbl-tele-meas')      as HTMLSpanElement;
+const lblTeleTarget    = document.getElementById('lbl-tele-target')    as HTMLSpanElement;
+const lblTeleVel       = document.getElementById('lbl-tele-vel')       as HTMLSpanElement;
+const lblTeleLag       = document.getElementById('lbl-tele-lag')       as HTMLSpanElement;
+const lblPerfMaxLag    = document.getElementById('lbl-perf-max-lag')   as HTMLSpanElement;
+const lblPerfMeanLag   = document.getElementById('lbl-perf-mean-lag')  as HTMLSpanElement;
+const lblPerfStepLoss  = document.getElementById('lbl-perf-step-loss') as HTMLSpanElement;
+const lblPerfLagJitter = document.getElementById('lbl-perf-lag-jitter')as HTMLSpanElement;
+const lblCmdDist       = document.getElementById('lbl-cmd-dist')       as HTMLLabelElement;
+const lblCmdSpeed      = document.getElementById('lbl-cmd-speed')      as HTMLLabelElement;
+const lblCmdAccel      = document.getElementById('lbl-cmd-accel')      as HTMLLabelElement;
+const lblHomeSpeed1    = document.getElementById('lbl-home-speed1')    as HTMLLabelElement;
+const lblHomeSpeed2    = document.getElementById('lbl-home-speed2')    as HTMLLabelElement;
 
 // USB link card
 const linkUpdates     = document.getElementById('link-updates')       as HTMLSpanElement;
@@ -152,6 +178,97 @@ let currentMicrosteps = 32;  // from SETTINGS packet, used for deg→µstep comm
 let linkInterval: ReturnType<typeof setInterval> | null = null;
 let activeTuner: AutoTuner | null = null;
 
+// ── Linear mode state ─────────────────────────────────────────────────────────
+
+let linearMode: boolean = localStorage.getItem('linearMode') !== 'false';  // default: true
+let mmPerRev:   number  = parseFloat(localStorage.getItem('mmPerRev') ?? '34.18');
+
+function setLinearMode(on: boolean): void {
+  const prev = linearMode;
+  linearMode = on;
+  localStorage.setItem('linearMode', String(on));
+  // Convert speed inputs from previous mode to new mode on actual toggle
+  if (prev !== on) {
+    const hs1 = parseFloat(setHomeSpeed1.value) || (on ? 30 : 0.9);
+    const hs2 = parseFloat(setHomeSpeed2.value) || (on ? 5 : 0.15);
+    setHomeSpeed1.value = on ? rpmToMmPerSec(hs1, mmPerRev).toFixed(2) : mmPerSecToRpm(hs1, mmPerRev).toFixed(1);
+    setHomeSpeed2.value = on ? rpmToMmPerSec(hs2, mmPerRev).toFixed(2) : mmPerSecToRpm(hs2, mmPerRev).toFixed(1);
+    const js = parseFloat(inpJogSpeed.value) || (on ? 60 : 10);
+    inpJogSpeed.value = on ? rpmToMmPerSec(js, mmPerRev).toFixed(2) : mmPerSecToRpm(js, mmPerRev).toFixed(1);
+    // Accel: convert °/s² ↔ mm/s²
+    const ac = parseFloat(inpAccel.value) || (on ? 500 : 100);
+    inpAccel.value = on
+      ? ((ac / 360) * mmPerRev).toFixed(1)          // °/s² → mm/s²
+      : ((ac / mmPerRev) * 360).toFixed(0);           // mm/s² → °/s²
+    // Command entry distance and speed
+    const cd = parseFloat(inpDistance.value) || (on ? 180 : 20);
+    inpDistance.value = on
+      ? degToMm(cd, mmPerRev).toFixed(2)            // ° → mm
+      : mmToDeg(cd, mmPerRev).toFixed(1);            // mm → °
+    const cs = parseFloat(inpSpeed.value) || (on ? 112 : 100);
+    inpSpeed.value = on
+      ? rpmToMmPerSec(cs, mmPerRev).toFixed(1)      // RPM → mm/s
+      : mmPerSecToRpm(cs, mmPerRev).toFixed(0);      // mm/s → RPM
+  }
+  applyUnitMode();
+}
+function setMmPerRev(val: number): void {
+  mmPerRev = val;
+  localStorage.setItem('mmPerRev', String(val));
+}
+
+const JOG_STEPS_ANGULAR: [number, string][] = [
+  [1,   '1 (1.8°)'],
+  [10,  '10 (18°)'],
+  [100, '100 (180°)'],
+];
+const JOG_STEPS_LINEAR_MM: [number, string][] = [
+  [0.1, '0.1 mm'],
+  [1,   '1 mm'],
+  [10,  '10 mm'],
+];
+let selectedJogValue = 10;   // full steps (angular) or mm (linear)
+
+function applyUnitMode(): void {
+  const lin = linearMode;
+  chkLinearMode.checked = lin;
+  lblMmPerRev.classList.toggle('visible', lin);
+
+  lblTeleMeas.textContent      = lin ? 'Position encoder (mm)' : 'Position encoder (°)';
+  lblTeleTarget.textContent    = lin ? 'Position target (mm)'  : 'Position target (°)';
+  lblTeleVel.textContent       = lin ? 'Velocity (mm/s)'       : 'Velocity (RPM)';
+  lblTeleLag.textContent       = lin ? 'Lag (mm)'              : 'Lag (°)';
+  lblPerfMaxLag.textContent    = lin ? 'Max Lag (mm)'          : 'Max Lag (°)';
+  lblPerfMeanLag.textContent   = lin ? 'Mean Lag (mm)'         : 'Mean Lag (°)';
+  lblPerfStepLoss.textContent  = lin ? 'Step Loss (mm)'        : 'Step Loss (°)';
+  lblPerfLagJitter.textContent = lin ? 'Lag Jitter σ (mm)'     : 'Lag Jitter (σ)';
+
+  lblCmdDist.firstChild!.textContent  = lin ? 'Distance (mm)' : 'Distance (°)';
+  lblCmdSpeed.firstChild!.textContent = lin ? 'Speed (mm/s)'  : 'Speed (RPM)';
+  lblCmdAccel.firstChild!.textContent = lin ? 'Accel (mm/s²)' : 'Accel (°/s²)';
+
+  lblHomeSpeed1.firstChild!.textContent = lin ? 'Fast Home Speed (mm/s)' : 'Fast Home Speed (RPM)';
+  lblHomeSpeed2.firstChild!.textContent = lin ? 'Slow Home Speed (mm/s)' : 'Slow Home Speed (RPM)';
+  lblJogSpeed.firstChild!.textContent   = lin ? 'Jog Speed (mm/s)'       : 'Jog Speed (RPM)';
+
+  // Rebuild jog step buttons
+  const presets = lin ? JOG_STEPS_LINEAR_MM : JOG_STEPS_ANGULAR;
+  jogStepSizesDiv.innerHTML = '';
+  selectedJogValue = presets[1][0];
+  presets.forEach(([val, label], i) => {
+    const btn = document.createElement('button');
+    btn.className = `jog-step${i === 1 ? ' active' : ''}`;
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      jogStepSizesDiv.querySelectorAll<HTMLButtonElement>('.jog-step')
+        .forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedJogValue = val;
+    });
+    jogStepSizesDiv.appendChild(btn);
+  });
+}
+
 
 // ── Queue ──────────────────────────────────────────────────────────────────────
 
@@ -159,6 +276,8 @@ const queueStore = new QueueStore();
 const queueRunner = new QueueRunner(queueStore, {
   write: (cmd) => conn.write(cmd),
   getMicrosteps: () => currentMicrosteps,
+  getStartPosDeg: () => encToDeg(lastKnownPosEnc),
+  onCommandedPos: (deg) => setCommandedPos(deg),
   onStateChange: (state) => {
     const running = state !== 'idle';
     btnRunQueue.disabled = running || queueStore.length === 0;
@@ -170,6 +289,7 @@ const queueRunner = new QueueRunner(queueStore, {
     btnJogNeg.disabled = running;
     btnJogPos.disabled = running;
     if (running && state === 'sending') {
+      lastMoveWasJog = false;  // queue start: next jog after queue must re-sync
       resetPerfAndHold();
       store.clear();
       chart.update(store);
@@ -177,9 +297,11 @@ const queueRunner = new QueueRunner(queueStore, {
     }
   },
   onComplete: () => {
+    lastMoveWasJog = false;  // queue moved to a new position; next jog must re-sync
     renderBlockStats();
   },
   onAbort: (_reason) => {
+    lastMoveWasJog = false;
     renderBlockStats();
   },
 });
@@ -203,10 +325,40 @@ requestAnimationFrame(_rafLoop);
 let currentKp = 3.0;
 let currentKd = 0.1;
 
+// Jog absolute-position accumulator.
+// Accumulates in degrees (float) so rounding to microsteps happens once per
+// total position, not once per jog step — prevents 1mm+1mm = 1.99mm drift.
+// Reset to 0 on home/set-home; synced from telemetry after non-jog moves.
+let jogAbsTargetDeg = 0;
+let lastMoveWasJog  = false;  // false → sync from telemetry on next jog
+let lastKnownPosEnc = 0;      // encoder (actual) position — updated from UPDATE.meas and STOP.pos
+
+/** Update the "Target:" line below the DRO readout with the commanded float position. */
+function setCommandedPos(deg: number): void {
+  if (linearMode) {
+    droCommanded.textContent = `Target: ${degToMm(deg, mmPerRev).toFixed(3)} mm`;
+  } else {
+    droCommanded.textContent = `Target: ${deg.toFixed(2)}°`;
+  }
+}
+
 // ── Initial state ────────────────────────────────────────────────────────────
 
 setControlsEnabled(false);
 chart.init(chartContainer);
+inpMmPerRev.value = mmPerRev.toString();
+applyUnitMode();
+// On page load the inputs always hold their HTML defaults.
+// If linear mode is active, overwrite them with the mm defaults directly —
+// avoids converting angular HTML defaults and keeps values clean on refresh.
+if (linearMode) {
+  inpJogSpeed.value   = '50';
+  inpAccel.value      = '50';
+  setHomeSpeed1.value = '20';
+  setHomeSpeed2.value = '5';
+  inpDistance.value   = '20';
+  inpSpeed.value      = '100';
+}
 
 function setMotionEnabled(on: boolean): void {
   btnMove.disabled     = !on;
@@ -217,6 +369,8 @@ function setMotionEnabled(on: boolean): void {
   btnRunQueue.disabled = !on || queueStore.length === 0;
   btnJogNeg.disabled   = !on;
   btnJogPos.disabled   = !on;
+  btnGoto.disabled     = !on;
+  btnSetZero.disabled  = !on;
 }
 
 function setSettingsEnabled(on: boolean): void {
@@ -245,6 +399,71 @@ function setSettingsEnabled(on: boolean): void {
 // Toggle enables/disables the SpreadCycle threshold speed input
 setSpreadEnable.addEventListener('change', () => {
   setSpreadSpeed.disabled = !setSpreadEnable.checked;
+});
+
+// ── Linear mode controls ──────────────────────────────────────────────────────
+
+chkLinearMode.addEventListener('change', () => setLinearMode(chkLinearMode.checked));
+
+inpMmPerRev.addEventListener('change', () => {
+  const val = parseFloat(inpMmPerRev.value);
+  if (val > 0) setMmPerRev(val);
+});
+
+btnSetZero.addEventListener('click', () => {
+  sendCmd({ cmd: 'reset_position' });
+  jogAbsTargetDeg  = 0;
+  lastKnownPosEnc = 0;
+  lastMoveWasJog   = false;
+  droCommanded.textContent = linearMode ? 'Target: 0.000 mm' : 'Target: 0.00°';
+  // If hold is active, telemetry will update the display within one cycle.
+  // If idle (no hold), no UPDATE packets flow, so force the display to 0 now.
+  const zeroPos = linearMode ? '0.00 mm' : '0.0°';
+  droPosition.textContent  = zeroPos;
+  teleMeas.textContent     = zeroPos;
+  teleTarget.textContent   = zeroPos;
+  teleLag.textContent      = linearMode ? '0.000 mm' : '0.00°';
+});
+
+btnGoto.addEventListener('click', () => {
+  const rawVal = parseFloat(inpGotoPos.value);
+  if (isNaN(rawVal)) return;
+
+  const distDeg  = linearMode ? mmToDeg(rawVal, mmPerRev) : rawVal;
+  const speedInput = parseFloat(inpJogSpeed.value) || (linearMode ? 10 : 60);
+  const speedRPM = linearMode ? mmPerSecToRpm(speedInput, mmPerRev) : speedInput;
+  const rawAccel = parseFloat(inpAccel.value) || 500;
+  const accelDPS2 = linearMode ? mmPerSec2ToDegPerSec2(rawAccel, mmPerRev) : rawAccel;
+
+  jogAbsTargetDeg  = distDeg;   // GoTo sets absolute — sync jog accumulator too
+  lastMoveWasJog   = false;
+  setCommandedPos(distDeg);
+
+  resetPerfAndHold();
+  setMotionState('moving');
+  const currentMeas = store.lastMeas;
+  store.clear();
+  const distEnc = degToEnc(distDeg);
+  const padding = Math.abs(distEnc - currentMeas) * 0.1 + 10;
+  chart.seedYRange(
+    Math.min(currentMeas, distEnc) - padding,
+    Math.max(currentMeas, distEnc) + padding,
+    rpmToStepsPerSec(speedRPM, currentMicrosteps) / (200 * currentMicrosteps / 4096),
+  );
+  chart.update(store);
+  movesSent++;
+
+  const cmd = moveCommand(
+    degToMicrosteps(distDeg, currentMicrosteps),
+    rpmToStepsPerSec(speedRPM, currentMicrosteps),
+    degPerSec2ToStepsPerSec2(accelDPS2, currentMicrosteps),
+    true,   // absolute from zero
+  );
+  conn.write(cmd).catch((err: unknown) => {
+    movesSent--;
+    setMotionState('idle');
+    alert(`Go To failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
 });
 
 function setControlsEnabled(on: boolean): void {
@@ -312,8 +531,14 @@ function updateDeviationGauge(lag: number): void {
   else if (absLag <= 12) cls = 'dev-amber';
   else                   cls = 'dev-red';
 
-  const sign = lagDeg >= 0 ? '+' : '';
-  holdDev.textContent = `${sign}${lagDeg.toFixed(2)}°`;
+  if (linearMode) {
+    const lagMm = encToMm(lag, mmPerRev);
+    const sign = lagMm >= 0 ? '+' : '';
+    holdDev.textContent = `${sign}${lagMm.toFixed(3)} mm`;
+  } else {
+    const sign = lagDeg >= 0 ? '+' : '';
+    holdDev.textContent = `${sign}${lagDeg.toFixed(2)}°`;
+  }
   holdDev.className   = `metric-value dev-value ${cls}`;
 }
 
@@ -416,8 +641,12 @@ btnEstop.addEventListener('click', () => {
 // Homing button
 function startHoming(): void {
   const directionCW = !chkHomeInvert.checked;
-  const speed1 = rpmToMicrostepsPerSec(parseFloat(setHomeSpeed1.value) || 30, currentMicrosteps);
-  const speed2 = rpmToMicrostepsPerSec(parseFloat(setHomeSpeed2.value) || 5, currentMicrosteps);
+  const speed1Raw = parseFloat(setHomeSpeed1.value) || (linearMode ? 0.9 : 30);
+  const speed2Raw = parseFloat(setHomeSpeed2.value) || (linearMode ? 0.15 : 5);
+  const speed1RPM = linearMode ? mmPerSecToRpm(speed1Raw, mmPerRev) : speed1Raw;
+  const speed2RPM = linearMode ? mmPerSecToRpm(speed2Raw, mmPerRev) : speed2Raw;
+  const speed1 = rpmToMicrostepsPerSec(speed1RPM, currentMicrosteps);
+  const speed2 = rpmToMicrostepsPerSec(speed2RPM, currentMicrosteps);
   store.clear();
   chart.resetZoom();
   chart.update(store);
@@ -458,10 +687,13 @@ tabDwell.addEventListener('click', () => {
 
 // Add entry buttons
 btnAddMove.addEventListener('click', () => {
+  const rawDist  = parseFloat(inpDistance.value) || 0;
+  const rawSpeed = parseFloat(inpSpeed.value)    || (linearMode ? 10 : 112);
+  const rawAccel = parseFloat(inpAccel.value)    || 500;
   queueStore.addMove({
-    distanceDeg: parseFloat(inpDistance.value) || 0,
-    speedRPM:    parseFloat(inpSpeed.value) || 112,
-    accelDPS2:   parseFloat(inpAccel.value) || 500,
+    distanceDeg: linearMode ? mmToDeg(rawDist, mmPerRev)                : rawDist,
+    speedRPM:    linearMode ? mmPerSecToRpm(rawSpeed, mmPerRev)         : rawSpeed,
+    accelDPS2:   linearMode ? mmPerSec2ToDegPerSec2(rawAccel, mmPerRev) : rawAccel,
     absolute:    chkAbs.checked,
   });
 });
@@ -509,8 +741,16 @@ function renderQueue(): void {
     if (entry.type === 'move') {
       moveNum++;
       const p = entry.params;
-      const sign = p.absolute ? 'abs ' : (p.distanceDeg >= 0 ? '+' : '');
-      label = `M${moveNum}: ${sign}${p.distanceDeg.toFixed(1)}° @ ${p.speedRPM} RPM, ${p.accelDPS2}°/s²`;
+      if (linearMode) {
+        const d = degToMm(p.distanceDeg, mmPerRev);
+        const s = rpmToMmPerSec(p.speedRPM, mmPerRev);
+        const a = degToMm(p.accelDPS2, mmPerRev);
+        const sign = p.absolute ? 'abs ' : (d >= 0 ? '+' : '');
+        label = `M${moveNum}: ${sign}${d.toFixed(2)}mm @ ${s.toFixed(1)}mm/s, ${a.toFixed(1)}mm/s²`;
+      } else {
+        const sign = p.absolute ? 'abs ' : (p.distanceDeg >= 0 ? '+' : '');
+        label = `M${moveNum}: ${sign}${p.distanceDeg.toFixed(1)}° @ ${p.speedRPM} RPM, ${p.accelDPS2}°/s²`;
+      }
     } else {
       dwellNum++;
       label = `D${dwellNum}: Wait ${entry.params.durationMs} ms`;
@@ -566,18 +806,26 @@ function startInlineEdit(div: HTMLDivElement, entry: QueueEntry): void {
 
   if (entry.type === 'move') {
     const p = entry.params;
+    const [dispDist, dispSpeed, dispAccel] = linearMode
+      ? [degToMm(p.distanceDeg, mmPerRev), rpmToMmPerSec(p.speedRPM, mmPerRev), degToMm(p.accelDPS2, mmPerRev)]
+      : [p.distanceDeg, p.speedRPM, p.accelDPS2];
+    const [dStep, sStep, aStep] = linearMode ? [0.01, 0.1, 0.1] : [0.1, 1, 10];
+    const [dUnit, sUnit, aUnit] = linearMode ? ['mm', 'mm/s', 'mm/s²'] : ['°', 'RPM', '°/s²'];
     fields.innerHTML = `
-      <input type="number" value="${p.distanceDeg}" step="0.1" title="Distance (°)" />
-      <input type="number" value="${p.speedRPM}" step="1" min="1" title="Speed (RPM)" />
-      <input type="number" value="${p.accelDPS2}" step="10" min="10" title="Accel (°/s²)" />
+      <input type="number" value="${dispDist.toFixed(linearMode ? 2 : 1)}" step="${dStep}" title="Distance (${dUnit})" />
+      <input type="number" value="${dispSpeed.toFixed(linearMode ? 1 : 0)}" step="${sStep}" min="0.01" title="Speed (${sUnit})" />
+      <input type="number" value="${dispAccel.toFixed(linearMode ? 1 : 0)}" step="${aStep}" min="0.01" title="Accel (${aUnit})" />
       <button>OK</button>
     `;
     const inputs = fields.querySelectorAll('input');
     fields.querySelector('button')!.addEventListener('click', () => {
+      const d = parseFloat(inputs[0].value) || 0;
+      const s = parseFloat(inputs[1].value) || (linearMode ? 10 : 112);
+      const a = parseFloat(inputs[2].value) || 500;
       queueStore.updateEntry(entry.id, {
-        distanceDeg: parseFloat(inputs[0].value) || 0,
-        speedRPM:    parseFloat(inputs[1].value) || 112,
-        accelDPS2:   parseFloat(inputs[2].value) || 500,
+        distanceDeg: linearMode ? mmToDeg(d, mmPerRev)                : d,
+        speedRPM:    linearMode ? mmPerSecToRpm(s, mmPerRev)          : s,
+        accelDPS2:   linearMode ? mmPerSec2ToDegPerSec2(a, mmPerRev)  : a,
       });
     });
   } else {
@@ -656,10 +904,13 @@ moveForm.addEventListener('submit', (e: Event) => {
   const currentMeas = store.lastMeas;
   store.clear();
 
-  // User inputs are in degrees / RPM / °/s²
-  const distDeg  = parseFloat(inpDistance.value);
-  const speedRPM = parseFloat(inpSpeed.value);
-  const accelDPS = parseFloat(inpAccel.value);
+  // User inputs are in current unit mode (° or mm)
+  const rawDist  = parseFloat(inpDistance.value);
+  const rawSpeed = parseFloat(inpSpeed.value);
+  const rawAccel = parseFloat(inpAccel.value);
+  const distDeg  = linearMode ? mmToDeg(rawDist, mmPerRev)                : rawDist;
+  const speedRPM = linearMode ? mmPerSecToRpm(rawSpeed, mmPerRev)         : rawSpeed;
+  const accelDPS = linearMode ? mmPerSec2ToDegPerSec2(rawAccel, mmPerRev) : rawAccel;
 
   // Convert to encoder counts for chart seeding
   const distEnc  = degToEnc(distDeg);
@@ -692,26 +943,36 @@ moveForm.addEventListener('submit', (e: Event) => {
 // ── Jog controls ─────────────────────────────────────────────────────────────
 
 const DEG_PER_FULL_STEP = 1.8;
-let selectedJogSteps = 10;
-
-jogStepBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    jogStepBtns.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    selectedJogSteps = parseInt(btn.dataset.steps!, 10);
-  });
-});
 
 function sendJog(sign: 1 | -1): void {
-  const distDeg  = sign * selectedJogSteps * DEG_PER_FULL_STEP;
-  const speedRPM = parseFloat(inpJogSpeed.value);
-  const accelDPS = parseFloat(inpAccel.value);
+  let distDeg: number;
+  let speedRPM: number;
+
+  if (linearMode) {
+    distDeg  = sign * mmToDeg(selectedJogValue, mmPerRev);
+    speedRPM = mmPerSecToRpm(parseFloat(inpJogSpeed.value) || 10, mmPerRev);
+  } else {
+    distDeg  = sign * selectedJogValue * DEG_PER_FULL_STEP;
+    speedRPM = parseFloat(inpJogSpeed.value) || 60;
+  }
+
+  // Sync accumulator from firmware when coming from a non-jog state so that
+  // the absolute target reflects any position change from queue/GoTo moves.
+  if (!lastMoveWasJog) {
+    jogAbsTargetDeg = encToDeg(lastKnownPosEnc);
+  }
+  jogAbsTargetDeg += distDeg;
+  lastMoveWasJog   = true;
+  setCommandedPos(jogAbsTargetDeg);
+
+  const rawAccel  = parseFloat(inpAccel.value) || 500;
+  const accelDPS2 = linearMode ? mmPerSec2ToDegPerSec2(rawAccel, mmPerRev) : rawAccel;
 
   const cmd = moveCommand(
-    degToMicrosteps(distDeg, currentMicrosteps),
+    degToMicrosteps(jogAbsTargetDeg, currentMicrosteps),
     rpmToStepsPerSec(speedRPM, currentMicrosteps),
-    degPerSec2ToStepsPerSec2(accelDPS, currentMicrosteps),
-    false,
+    degPerSec2ToStepsPerSec2(accelDPS2, currentMicrosteps),
+    true,   // absolute — prevents microstep-rounding accumulation across jogs
   );
   conn.write(cmd).catch((err: unknown) => {
     alert(`Jog error: ${err instanceof Error ? err.message : String(err)}`);
@@ -876,6 +1137,7 @@ conn.onSettings = (pkt: SettingsPacket): void => {
   setDAlpha.value     = pkt.d_alpha.toFixed(2);
   setJerkInput.value  = pkt.jerk.toFixed(0);
   setKv.value         = pkt.kv.toFixed(5);
+
 };
 
 // ── Status packet handler ────────────────────────────────────────────────────
@@ -947,11 +1209,20 @@ conn.onStatus = (pkt: StatusPacket): void => {
 
 conn.onPacket = (packet: Packet): void => {
   if (packet.type === 'update') {
-    // Display in degrees / RPM (encoder-count-independent units)
-    teleMeas.textContent    = `${encToDeg(packet.meas).toFixed(1)}°`;
-    teleTarget.textContent  = `${encToDeg(packet.target).toFixed(1)}°`;
-    teleVel.textContent     = `${encPerSecToRPM(packet.vel).toFixed(1)} RPM`;
-    teleLag.textContent     = `${encToDeg(packet.lag).toFixed(2)}°`;
+    lastKnownPosEnc = packet.meas;  // track actual encoder position for jog sync
+    // Display in current unit mode
+    if (linearMode) {
+      teleMeas.textContent   = `${encToMm(packet.meas,   mmPerRev).toFixed(2)} mm`;
+      teleTarget.textContent = `${encToMm(packet.target, mmPerRev).toFixed(2)} mm`;
+      teleVel.textContent    = `${encPerSecToMmPerSec(packet.vel, mmPerRev).toFixed(2)} mm/s`;
+      teleLag.textContent    = `${encToMm(packet.lag,    mmPerRev).toFixed(3)} mm`;
+    } else {
+      teleMeas.textContent   = `${encToDeg(packet.meas).toFixed(1)}°`;
+      teleTarget.textContent = `${encToDeg(packet.target).toFixed(1)}°`;
+      teleVel.textContent    = `${encPerSecToRPM(packet.vel).toFixed(1)} RPM`;
+      teleLag.textContent    = `${encToDeg(packet.lag).toFixed(2)}°`;
+    }
+    droPosition.textContent = teleMeas.textContent;
 
     // Chart accumulates during moving/correcting, freezes when settled
     const shouldChart = motionState === 'moving' || motionState === 'correcting';
@@ -963,12 +1234,17 @@ conn.onPacket = (packet: Packet): void => {
     // Update hold accuracy gauge if in hold phase
     if (motionState === 'correcting' || motionState === 'holding') {
       updateDeviationGauge(packet.lag);
-      holdPeakDev.textContent = `${store.moveStats.holdPeakDevDeg.toFixed(2)}°`;
+      holdPeakDev.textContent = linearMode
+        ? `${encToMm(store.moveStats.holdPeakDevCounts, mmPerRev).toFixed(3)} mm`
+        : `${store.moveStats.holdPeakDevDeg.toFixed(2)}°`;
     }
 
   } else if (packet.type === 'stop') {
     stopsReceived++;
-    teleMeas.textContent = `${encToDeg(packet.pos).toFixed(1)}°`;
+    teleMeas.textContent = linearMode
+      ? `${encToMm(packet.pos, mmPerRev).toFixed(2)} mm`
+      : `${encToDeg(packet.pos).toFixed(1)}°`;
+    droPosition.textContent = teleMeas.textContent;
 
     // Enter hold phase for deviation tracking
     const isNormalStop = !packet.reason.includes('Fault') && !packet.reason.includes('E-STOP');
@@ -988,16 +1264,32 @@ conn.onPacket = (packet: Packet): void => {
 
     // Populate per-move performance panel (undim values)
     const ms = store.moveStats;
-    perfMaxLag.textContent    = `${ms.peakLagDeg.toFixed(2)}°`;
-    perfMeanLag.textContent   = `${ms.meanLagDeg.toFixed(2)}°`;
-    perfStepLoss.textContent  = `${ms.skippedDeg.toFixed(2)}°`;
-    perfLagJitter.textContent = `${ms.lagJitterDeg.toFixed(2)}°`;
+    if (linearMode) {
+      const mf = mmPerRev / 360;   // multiply degree value to get mm
+      perfMaxLag.textContent    = `${(ms.peakLagDeg   * mf).toFixed(3)} mm`;
+      perfMeanLag.textContent   = `${(ms.meanLagDeg   * mf).toFixed(3)} mm`;
+      perfStepLoss.textContent  = `${(ms.skippedDeg   * mf).toFixed(3)} mm`;
+      perfLagJitter.textContent = `${(ms.lagJitterDeg * mf).toFixed(3)} mm`;
+    } else {
+      perfMaxLag.textContent    = `${ms.peakLagDeg.toFixed(2)}°`;
+      perfMeanLag.textContent   = `${ms.meanLagDeg.toFixed(2)}°`;
+      perfStepLoss.textContent  = `${ms.skippedDeg.toFixed(2)}°`;
+      perfLagJitter.textContent = `${ms.lagJitterDeg.toFixed(2)}°`;
+    }
     perfEffort.textContent    = `${ms.effortPct.toFixed(1)}%`;
     perfMaxLag.classList.remove('dimmed');
     perfMeanLag.classList.remove('dimmed');
     perfStepLoss.classList.remove('dimmed');
     perfLagJitter.classList.remove('dimmed');
     perfEffort.classList.remove('dimmed');
+
+    // Track actual encoder position from STOP packet (correct even after step loss)
+    lastKnownPosEnc = packet.pos;
+    // Do NOT reset lastMoveWasJog here — jog STOP packets would clear the float
+    // accumulator, causing the next jog to re-sync from the encoder's transient
+    // settle reading (e.g. 20.005 mm instead of 20.000 mm).
+    // lastMoveWasJog is only cleared by explicit non-jog actions: GoTo click,
+    // queue start/complete/abort, Set Home Here, homing success.
 
     // Notify queue runner (no-op if not running a queue)
     queueRunner.onStop(packet.reason);
@@ -1046,10 +1338,15 @@ conn.onHomingDone = (pkt: HomingDonePacket): void => {
     case 0:  // success
       cls = 'ok';
       lines.push('Homed');
-      teleMeas.textContent   = '0.0°';
-      teleTarget.textContent = '0.0°';
-      teleVel.textContent    = '0.0 RPM';
-      teleLag.textContent    = '0.00°';
+      jogAbsTargetDeg   = 0;
+      lastKnownPosEnc = 0;
+      lastMoveWasJog    = false;
+      droCommanded.textContent = linearMode ? 'Target: 0.000 mm' : 'Target: 0.00°';
+      teleMeas.textContent     = linearMode ? '0.00 mm' : '0.0°';
+      teleTarget.textContent   = linearMode ? '0.00 mm' : '0.0°';
+      teleVel.textContent      = linearMode ? '0.0 mm/s' : '0.0 RPM';
+      teleLag.textContent      = linearMode ? '0.000 mm' : '0.00°';
+      droPosition.textContent  = linearMode ? '0.00 mm' : '0.0°';
       break;
     case 1:  // timeout — motor never reached endstop
       cls = 'error';

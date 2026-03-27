@@ -527,7 +527,7 @@ static void PlannerTask(void *) {
         Serial1.printf("DBG:PLANNER %d cmd(s) queued\n", nCmds);
 
         // ---- planChain: compute globally-optimal block velocities ----
-        float chainStartPos = g_meas_pos;
+        float chainStartPos = g_hold_target;
         planChain(cmdBuf, nCmds, chainStartPos, blocks);
 
         // ---- Reset faults and drain any stale telemetry from the previous run ----
@@ -640,7 +640,10 @@ static void PlannerTask(void *) {
             g_hold_target = g_target_pos;
             g_hold_active = true;
         } else {
-            // Fault — disable driver for safety, do NOT enter active hold
+            // Fault — disable driver for safety, do NOT enter active hold.
+            // Resync g_hold_target to the encoder (actual) position so that
+            // chainStartPos on the next move is correct even after step loss.
+            g_hold_target = g_meas_pos;
             g_hold_active = false;
             tmc::disable();
             s_driver_enabled = false;
@@ -1034,6 +1037,17 @@ void resetPositions() {
     g_fault_estop     = false;
     g_fault_estop_gui = false;
     g_fault_brownout  = false;
+}
+
+void reZero() {
+    // Zero position state but preserve g_hold_active so the control task
+    // continues running and sending UPDATE packets at the new zero.
+    // The encoder is already zeroed by the caller (encoder::resetPosition()).
+    g_meas_pos        = 0.0f;
+    g_target_pos      = 0.0f;
+    g_hold_target     = 0.0f;
+    g_hold_state      = HOLD_CORRECTING;
+    g_settle_start_ms = 0;
 }
 
 void sendHomingResult(uint8_t result, uint16_t sgMinFast, uint16_t sgMinSlow,

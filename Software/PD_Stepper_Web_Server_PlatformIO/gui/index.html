@@ -11,10 +11,24 @@
       <header>
         <h1>PD-Stepper</h1>
         <div id="conn-section">
-          <span id="conn-dot" class="dot disconnected"></span>
-          <span id="conn-status">Disconnected</span>
           <button id="btn-estop" class="btn-estop" disabled>⛔ E-Stop</button>
           <button id="btn-connect">Connect</button>
+          <span id="conn-dot" class="dot disconnected"></span>
+          <span id="conn-status">Disconnected</span>
+        </div>
+        <div id="linear-mode-section">
+          <label class="toggle-label" style="margin:0; gap:8px; font-size:12px; color:var(--text-dim);">
+            <span>° / mm</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="chk-linear-mode" />
+              <span class="toggle-slider"></span>
+            </label>
+          </label>
+          <label id="lbl-mm-per-rev" class="settings-label"
+                 style="margin:0; flex-direction:row; align-items:center; gap:6px; font-size:12px; color:var(--text-dim);">
+            <span>mm/rev</span>
+            <input type="number" id="inp-mm-per-rev" value="34.18" step="0.1" min="0.01" style="width:72px;" />
+          </label>
         </div>
       </header>
 
@@ -73,7 +87,7 @@
 
           <!-- TMC / Motion Settings card -->
           <section class="card" id="tmc-settings-section">
-            <h2>TMC / Motion Settings</h2>
+            <h2>Driver Settings</h2>
             <div class="settings-grid">
               <!-- Voltage -->
               <div class="settings-row">
@@ -226,19 +240,19 @@
             <div id="tele-status" class="status stopped">● IDLE</div>
             <div class="metrics">
               <div class="metric">
-                <span class="metric-label">Position encoder (°)</span>
+                <span class="metric-label" id="lbl-tele-meas">Position encoder (°)</span>
                 <span class="metric-value" id="tele-meas">—</span>
               </div>
               <div class="metric">
-                <span class="metric-label">Position target (°)</span>
+                <span class="metric-label" id="lbl-tele-target">Position target (°)</span>
                 <span class="metric-value" id="tele-target">—</span>
               </div>
               <div class="metric">
-                <span class="metric-label">Velocity (RPM)</span>
+                <span class="metric-label" id="lbl-tele-vel">Velocity (RPM)</span>
                 <span class="metric-value" id="tele-vel">—</span>
               </div>
               <div class="metric">
-                <span class="metric-label">Lag (°)</span>
+                <span class="metric-label" id="lbl-tele-lag">Lag (°)</span>
                 <span class="metric-value" id="tele-lag">—</span>
               </div>
             </div>
@@ -247,19 +261,19 @@
               <h3 class="perf-heading">Move Performance</h3>
               <div class="metrics">
                 <div class="metric">
-                  <span class="metric-label">Max Lag (°)</span>
+                  <span class="metric-label" id="lbl-perf-max-lag">Max Lag (°)</span>
                   <span class="metric-value" id="perf-max-lag">—</span>
                 </div>
                 <div class="metric">
-                  <span class="metric-label">Mean Lag (°)</span>
+                  <span class="metric-label" id="lbl-perf-mean-lag">Mean Lag (°)</span>
                   <span class="metric-value" id="perf-mean-lag">—</span>
                 </div>
                 <div class="metric">
-                  <span class="metric-label">Step Loss (°)</span>
+                  <span class="metric-label" id="lbl-perf-step-loss">Step Loss (°)</span>
                   <span class="metric-value" id="perf-step-loss">—</span>
                 </div>
                 <div class="metric">
-                  <span class="metric-label">Lag Jitter (σ)</span>
+                  <span class="metric-label" id="lbl-perf-lag-jitter">Lag Jitter (σ)</span>
                   <span class="metric-value" id="perf-lag-jitter">—</span>
                 </div>
                 <div class="metric">
@@ -384,17 +398,26 @@
         <!-- RIGHT: Command + Queue pane -->
         <div id="queue-pane">
 
-          <!-- Jog controls -->
+          <!-- Position Control (DRO + Jog) -->
           <section class="card" id="jog-section">
-            <h2>Jog</h2>
-            <div class="jog-step-sizes">
-              <button class="jog-step" data-steps="1">1 (1.8°)</button>
-              <button class="jog-step active" data-steps="10">10 (18°)</button>
-              <button class="jog-step" data-steps="100">100 (180°)</button>
+            <h2>Position Control</h2>
+
+            <div class="dro-readout" id="dro-position">—</div>
+            <div class="dro-commanded" id="dro-commanded">Target: —</div>
+
+            <div class="dro-goto-row">
+              <input type="number" id="inp-goto-pos" step="0.1" placeholder="Go to…" />
+              <button id="btn-goto" disabled>Go</button>
             </div>
-            <label>Jog Speed (RPM)
+
+            <button id="btn-set-zero" class="btn-apply-group" style="width:100%; margin-bottom:10px;" disabled>Set Home Here</button>
+
+            <div class="jog-step-sizes" id="jog-step-sizes"><!-- built by applyUnitMode() --></div>
+
+            <label id="lbl-jog-speed">Jog Speed (RPM)
               <input type="number" id="inp-jog-speed" value="60" step="1" min="1" max="480" />
             </label>
+
             <div class="jog-buttons">
               <button id="btn-jog-neg" class="btn-jog" disabled>&#9664; Jog &minus;</button>
               <button id="btn-jog-pos" class="btn-jog" disabled>Jog + &#9654;</button>
@@ -422,16 +445,16 @@
             <div class="settings-grid">
               <div class="settings-row">
                 <label class="settings-label">Homing Current %
-                  <input type="number" id="set-home-current" value="65" step="5" min="10" max="100" />
+                  <input type="number" id="set-home-current" value="60" step="5" min="10" max="100" />
                 </label>
               </div>
               <div class="settings-row">
-                <label class="settings-label">Fast Home Speed (RPM)
+                <label class="settings-label" id="lbl-home-speed1">Fast Home Speed (RPM)
                   <input type="number" id="set-home-speed1" value="30" step="1" min="1" max="120" />
                 </label>
               </div>
               <div class="settings-row">
-                <label class="settings-label">Slow Home Speed (RPM)
+                <label class="settings-label" id="lbl-home-speed2">Slow Home Speed (RPM)
                   <input type="number" id="set-home-speed2" value="5" step="1" min="1" max="60" />
                 </label>
               </div>
@@ -442,7 +465,7 @@
               </div>
               <div class="settings-row">
                 <label class="settings-label">Slow Home Trigger
-                  <input type="number" id="set-home-sg2" value="10" step="1" min="0" max="255" />
+                  <input type="number" id="set-home-sg2" value="18" step="1" min="0" max="255" />
                 </label>
               </div>
             </div>
@@ -457,13 +480,13 @@
             </div>
             <div id="move-fields">
               <form id="move-form">
-                <label>Distance (°)
+                <label id="lbl-cmd-dist">Distance (°)
                   <input type="number" id="inp-distance" value="180" step="0.1" />
                 </label>
-                <label>Speed (RPM)
+                <label id="lbl-cmd-speed">Speed (RPM)
                   <input type="number" id="inp-speed" value="112" step="1" min="1" max="480" />
                 </label>
-                <label>Accel (°/s²)
+                <label id="lbl-cmd-accel">Accel (°/s²)
                   <input type="number" id="inp-accel" value="500" step="10" min="10" />
                 </label>
                 <div class="form-actions">
@@ -486,7 +509,7 @@
 
           <!-- Queue list -->
           <section class="card" id="queue-section">
-            <h2>Queue <span id="queue-count" class="chart-hint">0 entries</span></h2>
+            <h2>Command Queue <span id="queue-count" class="chart-hint">0 entries</span></h2>
             <div id="queue-list"></div>
             <div class="queue-controls">
               <button id="btn-run-queue" class="btn-apply-group" disabled>&#9654; Run Queue</button>
