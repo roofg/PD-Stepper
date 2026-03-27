@@ -291,7 +291,11 @@ const queueRunner = new QueueRunner(queueStore, {
     btnJogPos.disabled = running;
     if (running && state === 'sending') {
       lastMoveWasJog = false;  // queue start: next jog after queue must re-sync
-      resetPerfAndHold();
+      // On loop restarts the STOP handler already populated the performance panel
+      // with the just-completed iteration's stats.  Skip resetPerfAndHold() so
+      // they remain visible; still clear the store so the chart shows per-iteration
+      // data only.
+      if (!queueRunner.isLoopRestarting) resetPerfAndHold();
       store.clear();
       chart.update(store);
       setMotionState('moving');
