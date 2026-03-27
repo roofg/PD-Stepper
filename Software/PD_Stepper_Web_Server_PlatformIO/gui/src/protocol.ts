@@ -21,7 +21,7 @@ const HOMING_DONE_T   = 0xae;
 
 const UPDATE_LEN     = 33;
 const STOP_LEN       = 38;
-const SETTINGS_LEN   = 25;
+const SETTINGS_LEN   = 27;
 const STATUS_LEN     = 20;
 const BLOCK_DONE_LEN = 10;
 const HOMING_DONE_LEN = 34;
@@ -85,6 +85,7 @@ export interface SettingsPacket {
   spreadCycleSpeed: number; // steps/s threshold (0 = disabled)
   d_alpha:        number;  // D-term EMA filter coefficient (daInt / 10000)
   jerk:           number;  // S-curve jerk ramp time in ms (0 = auto ~10 ms)
+  holdDeadband:   number;  // encoder counts (dbInt / 100)
 }
 
 /** Driver status snapshot from 0xAA 0xDD packet (20 bytes). */
@@ -235,10 +236,10 @@ export class PacketParser {
 
       } else if (type === SETTINGS_T) {
         if (this.buf.length < SETTINGS_LEN) return;
-        // Validate XOR checksum over bytes [2..23]
+        // Validate XOR checksum over bytes [2..25]
         let cs = 0;
-        for (let i = 2; i < 24; i++) cs ^= this.buf[i];
-        if (cs !== this.buf[24]) {
+        for (let i = 2; i < 26; i++) cs ^= this.buf[i];
+        if (cs !== this.buf[26]) {
           this._stats.checksumErrors++;
           if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
           this.buf.shift();
@@ -262,6 +263,7 @@ export class PacketParser {
           spreadCycleSpeed: b[18] | (b[19] << 8),
           d_alpha:        (b[20] | (b[21] << 8)) / 10000,
           jerk:             b[22] | (b[23] << 8),
+          holdDeadband:   (b[24] | (b[25] << 8)) / 100,
         };
         this.onSettings?.(settings);
 

@@ -188,7 +188,7 @@ void setup() {
 /// Safe to call from setup() and processSerialCommands() (both run when
 /// TelemetryTask is idle).  g_usbWriteMutex serialises against DiagnosticsTask.
 void sendSettingsPacket() {
-  uint8_t buf[25];
+  uint8_t buf[27];
   buf[0] = 0xAA; buf[1] = 0xEE;
   buf[2] = (uint8_t)setVoltage;
   buf[3] = (uint8_t)setCurrent;
@@ -223,11 +223,14 @@ void sendSettingsPacket() {
   float jerkClamped = setJerk < 0.0f ? 0.0f : (setJerk > 65535.0f ? 65535.0f : setJerk);
   uint16_t jerkInt = (uint16_t)jerkClamped;  // ramp time in ms, 1 ms resolution
   buf[22] = jerkInt & 0xFF; buf[23] = jerkInt >> 8;
+  float dbClamped = motion::getHoldDeadband();
+  uint16_t dbInt = (uint16_t)(dbClamped * 100.0f);  // x100: 4.0 → 400, max 20.0 → 2000
+  buf[24] = dbInt & 0xFF; buf[25] = dbInt >> 8;
   uint8_t cs = 0;
-  for (int i = 2; i < 24; i++) cs ^= buf[i];
-  buf[24] = cs;
+  for (int i = 2; i < 26; i++) cs ^= buf[i];
+  buf[26] = cs;
   UsbWriteGuard guard;
-  if (guard) USBSerial.write(buf, 25);
+  if (guard) USBSerial.write(buf, 27);
 }
 
 void processSerialCommands() {
@@ -278,6 +281,10 @@ void processSerialCommands() {
             setJerk = ms;
             motion::setJerkRampTime(ms / 1000.0f);
             Serial1.printf("Set jerk ramp time: %.0f ms\n", ms);
+
+          } else if (strcmp(cmd, "set_hold_deadband") == 0) {
+            motion::setHoldDeadband((float)doc["value"]);
+            Serial1.printf("Hold deadband: %.2f counts\n", motion::getHoldDeadband());
 
           } else if (strcmp(cmd, "set_pid") == 0) {
             // Legacy alias: map ki → kd for backwards compat with scripts
@@ -446,12 +453,14 @@ void processSerialCommands() {
                 "\"hold_delay\":%d,\"microsteps\":%d,"
                 "\"stall_threshold\":%d,\"standstill_mode\":\"%s\","
                 "\"stealthchop\":%s,\"coolstep\":%s,"
-                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,\"d_alpha\":%.4f,\"jerk\":%.1f}\n",
+                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,\"d_alpha\":%.4f,\"jerk\":%.1f,"
+                "\"holdDeadband\":%.2f}\n",
                 setVoltage, setCurrent, setHoldCurrent, setHoldDelay,
                 setMicrosteps, setStall, standstillMode,
                 stealthchopEnabled ? "true" : "false",
                 coolstepEnabled    ? "true" : "false",
-                setKp, setKd, setKv, setDAlpha, setJerk);
+                setKp, setKd, setKv, setDAlpha, setJerk,
+                motion::getHoldDeadband());
             sendSettingsPacket();
 
           } else if (strcmp(cmd, "get_driver_status") == 0) {
@@ -608,6 +617,7 @@ void readSettings() {
     setKv     = preferences.getFloat("kv",      0.0f);
     setDAlpha = preferences.getFloat("d_alpha", 0.8f);
     setJerk   = preferences.getFloat("jerk_ms", 0.0f);
+    float holdDeadband = preferences.getFloat("holdDeadband", 4.0f);
     preferences.end();
     // Apply PD gains now (motion tasks pick them up on start)
     motion::setPD(setKp, setKd);
@@ -616,6 +626,7 @@ void readSettings() {
     if (setJerk > 0.0f) {
         motion::setJerkRampTime(setJerk / 1000.0f);
     }
+    motion::setHoldDeadband(holdDeadband);
   }
 }
 
@@ -636,6 +647,7 @@ void writeSettings() {
   preferences.putFloat("kv",           setKv);
   preferences.putFloat("d_alpha",      setDAlpha);
   preferences.putFloat("jerk_ms",      setJerk);
+  preferences.putFloat("holdDeadband", motion::getHoldDeadband());
   Serial1.println("Saving settings to flash");
   preferences.end();
   configureSettings();

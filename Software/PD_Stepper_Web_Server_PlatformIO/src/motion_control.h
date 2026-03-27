@@ -42,6 +42,13 @@ void setPhaseLeadGain(float kv);
 // aggressively; values above ~0.95 make the D term sluggish.
 void setDFilterAlpha(float alpha);
 
+// Set the hold position deadband (encoder counts, 0.5–20).
+// The PD hold loop only corrects when |error| exceeds this many counts.
+// Smaller = tighter hold accuracy; safe minimum ~2 (AS5600 noise floor ≈ 1–2 counts).
+// Default 4 = ±33 µm at 34.18 mm/rev.
+void  setHoldDeadband(float counts);
+float getHoldDeadband();
+
 // Set the S-curve jerk limit (µsteps/s³). Legacy interface — prefer setJerkRampTime().
 // 0 = auto (equivalent to maxAccel × 100, essentially trapezoidal).
 void setJerk(float jerkStepsPerSec3);

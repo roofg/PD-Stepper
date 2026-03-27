@@ -69,6 +69,9 @@ static volatile float g_brownout_threshold_v = 9.0f; // safe default (12V * 0.75
 // of zeroing velocity. Written by PlannerTask; read by ControlTask.
 static volatile bool  g_hold_active    = false;
 static volatile float g_hold_target    = 0.0f;
+// Hold deadband in encoder counts. PD loop corrects only when |error| exceeds
+// this many counts. Default 4 = ±33 µm at 34.18 mm/rev. Min safe value ~2.
+static volatile float g_hold_deadband_counts = 4.0f;
 // Track whether the driver has been enabled at least once since boot.
 // The driver starts disabled (EN HIGH) and is enabled on the first move.
 static volatile bool  s_driver_enabled = false;
@@ -737,7 +740,7 @@ static void ControlTask(void *) {
                 // SETTLED: position stayed inside deadband for HOLD_SETTLE_MS.
                 //   Step pulses stop → TMC2209 detects standstill → drops to
                 //   IHOLD automatically, dramatically reducing motor heat.
-                const float holdDeadband = 4.0f * counts_to_steps;
+                const float holdDeadband = g_hold_deadband_counts * counts_to_steps;
                 float holdError = g_hold_target - measPos;
                 bool insideDeadband = (fabsf(holdError) <= holdDeadband);
 
@@ -939,6 +942,13 @@ void setPhaseLeadGain(float kv) {
 void setDFilterAlpha(float alpha) {
     g_d_alpha = alpha;
 }
+
+void setHoldDeadband(float counts) {
+    if (counts < 0.5f) counts = 0.5f;
+    if (counts > 20.0f) counts = 20.0f;
+    g_hold_deadband_counts = counts;
+}
+float getHoldDeadband() { return g_hold_deadband_counts; }
 
 void setJerk(float jerkStepsPerSec3) {
     g_jerk = jerkStepsPerSec3;
