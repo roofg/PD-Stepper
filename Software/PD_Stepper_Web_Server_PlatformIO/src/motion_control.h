@@ -89,4 +89,16 @@ bool isEstopFault();
 // Software emergency stop — equivalent to pressing SW1. Safe to call from any task.
 void triggerEstop();
 
+// Reset all position state to zero and clear fault flags.
+// Only safe to call when isRunning() is false and no hold is active.
+void resetPositions();
+
+// Send a HOMING_DONE packet (0xAE) via USBSerial.
+// result: 0=ok 1=timeout 2=instant_stall 3=grinding 4=estop
+// sgMinFast/sgMinSlow: minimum SG_RESULT seen during each probe (0xFFFF = stage not reached)
+// sgBaseFast/sgBaseSlow: average free-running SG over first 5 post-ignore samples
+void sendHomingResult(uint8_t result, uint16_t sgMinFast, uint16_t sgMinSlow,
+                      uint16_t sgBaseFast, uint16_t sgBaseSlow,
+                      long finalPos, const char* errorMsg);
+
 } // namespace motion

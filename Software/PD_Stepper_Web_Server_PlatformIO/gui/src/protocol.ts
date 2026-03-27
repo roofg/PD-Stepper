@@ -17,12 +17,14 @@ const STOP_T       = 0xcc;
 const SETTINGS_T   = 0xee;
 const STATUS_T     = 0xdd;
 const BLOCK_DONE_T = 0xff;
+const HOMING_DONE_T   = 0xae;
 
 const UPDATE_LEN     = 33;
 const STOP_LEN       = 38;
 const SETTINGS_LEN   = 25;
 const STATUS_LEN     = 20;
 const BLOCK_DONE_LEN = 10;
+const HOMING_DONE_LEN = 34;
 
 export interface TelemetryUpdate {
   type: 'update';
@@ -51,6 +53,17 @@ export interface BlockDonePacket {
   blockIndex: number;   // 0-based block within chain
   totalBlocks: number;  // total blocks in chain
   pos: number;          // int32, encoder counts at block end
+}
+
+export interface HomingDonePacket {
+  type:       'homing_done';
+  result:     number;    // 0=ok 1=timeout 2=instant_stall 3=grinding 4=estop
+  sgMinFast:  number;    // 0–1023 raw SG; 0xFFFF = stage not reached
+  sgMinSlow:  number;
+  sgBaseFast: number;    // avg free-running SG (first 5 post-ignore samples); 0xFFFF = not reached
+  sgBaseSlow: number;
+  finalPos:   number;    // encoder counts
+  errorMsg:   string;
 }
 
 export type Packet = TelemetryUpdate | StopPacket;
@@ -82,6 +95,7 @@ export interface StatusPacket {
   otWarn:           boolean;
   otShutdown:       boolean;
   faultLag:         boolean;
+  isHoming:         boolean;
   faultBrownout:    boolean;
   holdActive:       boolean;
   isRunning:        boolean;
@@ -117,10 +131,11 @@ export interface LinkStats {
 
 export class PacketParser {
   private buf: number[] = [];
-  onPacket:    ((pkt: Packet) => void) | null = null;
-  onSettings:  ((pkt: SettingsPacket) => void) | null = null;
-  onStatus:    ((pkt: StatusPacket)   => void) | null = null;
-  onBlockDone: ((pkt: BlockDonePacket) => void) | null = null;
+  onPacket:     ((pkt: Packet) => void) | null = null;
+  onSettings:   ((pkt: SettingsPacket) => void) | null = null;
+  onStatus:     ((pkt: StatusPacket)   => void) | null = null;
+  onBlockDone:  ((pkt: BlockDonePacket) => void) | null = null;
+  onHomingDone: ((pkt: HomingDonePacket) => void) | null = null;
 
   private _stats: LinkStats = this._zeroStats();
   private _lastUpdateWallMs = 0;
@@ -269,6 +284,7 @@ export class PacketParser {
           otWarn:            (b[4] & 0x02) !== 0,
           otShutdown:        (b[4] & 0x04) !== 0,
           faultLag:          (b[4] & 0x08) !== 0,
+          isHoming:          (b[4] & 0x10) !== 0,
           faultBrownout:     (b[4] & 0x20) !== 0,
           holdActive:        (b[4] & 0x40) !== 0,
           isRunning:         (b[4] & 0x80) !== 0,
@@ -309,6 +325,34 @@ export class PacketParser {
           blockIndex:  pkt[2],
           totalBlocks: pkt[3],
           pos:         dv.getInt32(4, true),
+        });
+
+      } else if (type === HOMING_DONE_T) {
+        if (this.buf.length < HOMING_DONE_LEN) return;
+        // Validate XOR checksum over bytes [2..32]
+        let cs = 0;
+        for (let i = 2; i < 33; i++) cs ^= this.buf[i];
+        if (cs !== this.buf[33]) {
+          this._stats.checksumErrors++;
+          if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
+          this.buf.shift();
+          continue;
+        }
+        this._wasDiscarding = false;
+        const pkt = this.buf.splice(0, HOMING_DONE_LEN);
+        const dv  = new DataView(new Uint8Array(pkt).buffer);
+        const rawErr = new Uint8Array(pkt.slice(15, 33));
+        const end = rawErr.indexOf(0);
+        const errorMsg = new TextDecoder().decode(rawErr.slice(0, end === -1 ? 18 : end));
+        this.onHomingDone?.({
+          type:       'homing_done',
+          result:     pkt[2],
+          sgMinFast:  dv.getUint16(3,  true),
+          sgMinSlow:  dv.getUint16(5,  true),
+          sgBaseFast: dv.getUint16(7,  true),
+          sgBaseSlow: dv.getUint16(9,  true),
+          finalPos:   dv.getInt32(11,  true),
+          errorMsg,
         });
 
       } else {

@@ -1,6 +1,6 @@
 import 'uplot/dist/uPlot.min.css';
 import { SerialConnection } from './serial';
-import { moveCommand, type Packet, type SettingsPacket, type StatusPacket, type BlockDonePacket } from './protocol';
+import { moveCommand, type Packet, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket } from './protocol';
 import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
 import { encToDeg, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec } from './units';
@@ -58,6 +58,12 @@ const btnLoopQueue    = document.getElementById('btn-loop-queue')     as HTMLBut
 const btnClearQueue   = document.getElementById('btn-clear-queue')    as HTMLButtonElement;
 const blockStatsSection = document.getElementById('block-stats-section') as HTMLElement;
 const blockStatsList  = document.getElementById('block-stats-list')   as HTMLDivElement;
+
+// Jog controls
+const btnJogNeg       = document.getElementById('btn-jog-neg')         as HTMLButtonElement;
+const btnJogPos       = document.getElementById('btn-jog-pos')         as HTMLButtonElement;
+const inpJogSpeed     = document.getElementById('inp-jog-speed')       as HTMLInputElement;
+const jogStepBtns     = document.querySelectorAll<HTMLButtonElement>('.jog-step');
 
 // USB link card
 const linkUpdates     = document.getElementById('link-updates')       as HTMLSpanElement;
@@ -127,6 +133,16 @@ const fbBrownout  = document.getElementById('fb-brownout')   as HTMLSpanElement;
 const fbHoldActive = document.getElementById('fb-hold-active') as HTMLSpanElement;
 const fbHoldSettled = document.getElementById('fb-hold-settled') as HTMLSpanElement;
 
+// Homing card
+const btnHome        = document.getElementById('btn-home')          as HTMLButtonElement;
+const chkHomeInvert  = document.getElementById('chk-home-invert')   as HTMLInputElement;
+const setHomeCurrent = document.getElementById('set-home-current')  as HTMLInputElement;
+const setHomeSpeed1  = document.getElementById('set-home-speed1')   as HTMLInputElement;
+const setHomeSpeed2  = document.getElementById('set-home-speed2')   as HTMLInputElement;
+const setHomeSg1     = document.getElementById('set-home-sg1')      as HTMLInputElement;
+const setHomeSg2     = document.getElementById('set-home-sg2')      as HTMLInputElement;
+const homingResultDiv = document.getElementById('homing-result')    as HTMLDivElement;
+
 // ── Session state ─────────────────────────────────────────────────────────────
 
 let movesSent     = 0;
@@ -135,6 +151,7 @@ let settingsReceived = false;
 let currentMicrosteps = 32;  // from SETTINGS packet, used for deg→µstep command conversion
 let linkInterval: ReturnType<typeof setInterval> | null = null;
 let activeTuner: AutoTuner | null = null;
+
 
 // ── Queue ──────────────────────────────────────────────────────────────────────
 
@@ -148,8 +165,10 @@ const queueRunner = new QueueRunner(queueStore, {
     btnClearQueue.disabled = running;
     btnAddMove.disabled = running;
     btnAddDwell.disabled = running;
-    // Disable direct move during queue execution
+    // Disable direct move and jog during queue execution
     btnMove.disabled = running;
+    btnJogNeg.disabled = running;
+    btnJogPos.disabled = running;
     if (running && state === 'sending') {
       resetPerfAndHold();
       store.clear();
@@ -196,6 +215,8 @@ function setMotionEnabled(on: boolean): void {
   inpAccel.disabled    = !on;
   chkAbs.disabled      = !on;
   btnRunQueue.disabled = !on || queueStore.length === 0;
+  btnJogNeg.disabled   = !on;
+  btnJogPos.disabled   = !on;
 }
 
 function setSettingsEnabled(on: boolean): void {
@@ -391,6 +412,27 @@ btnEstop.addEventListener('click', () => {
   sendCmd({ cmd: 'estop' });
   if (queueRunner.isRunning) queueRunner.abort('E-STOP (GUI)');
 });
+
+// Homing button
+function startHoming(): void {
+  const directionCW = !chkHomeInvert.checked;
+  const speed1 = rpmToMicrostepsPerSec(parseFloat(setHomeSpeed1.value) || 30, currentMicrosteps);
+  const speed2 = rpmToMicrostepsPerSec(parseFloat(setHomeSpeed2.value) || 5, currentMicrosteps);
+  store.clear();
+  chart.resetZoom();
+  chart.update(store);
+  sendCmd({
+    cmd: 'home',
+    direction: directionCW ? 'cw' : 'ccw',
+    current_pct: parseInt(setHomeCurrent.value, 10) || 40,
+    speed1,
+    speed2,
+    sg_thresh1: parseInt(setHomeSg1.value, 10) || 100,
+    sg_thresh2: parseInt(setHomeSg2.value, 10) || 80,
+  });
+  btnHome.disabled = true;
+}
+btnHome.addEventListener('click', () => startHoming());
 
 btnResetChart.addEventListener('click', () => {
   store.clear();
@@ -647,6 +689,38 @@ moveForm.addEventListener('submit', (e: Event) => {
   });
 });
 
+// ── Jog controls ─────────────────────────────────────────────────────────────
+
+const DEG_PER_FULL_STEP = 1.8;
+let selectedJogSteps = 10;
+
+jogStepBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    jogStepBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedJogSteps = parseInt(btn.dataset.steps!, 10);
+  });
+});
+
+function sendJog(sign: 1 | -1): void {
+  const distDeg  = sign * selectedJogSteps * DEG_PER_FULL_STEP;
+  const speedRPM = parseFloat(inpJogSpeed.value);
+  const accelDPS = parseFloat(inpAccel.value);
+
+  const cmd = moveCommand(
+    degToMicrosteps(distDeg, currentMicrosteps),
+    rpmToStepsPerSec(speedRPM, currentMicrosteps),
+    degPerSec2ToStepsPerSec2(accelDPS, currentMicrosteps),
+    false,
+  );
+  conn.write(cmd).catch((err: unknown) => {
+    alert(`Jog error: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+btnJogNeg.addEventListener('click', () => sendJog(-1));
+btnJogPos.addEventListener('click', () => sendJog(1));
+
 // ── Settings: apply helpers ───────────────────────────────────────────────────
 
 function sendCmd(obj: Record<string, unknown>): void {
@@ -841,6 +915,8 @@ conn.onStatus = (pkt: StatusPacket): void => {
   setBadge(fbHoldActive,  pkt.holdActive,  'ok');
   setBadge(fbHoldSettled, pkt.holdSettled, 'ok');
 
+  btnHome.disabled = !settingsReceived || pkt.isRunning || pkt.isHoming;
+
   // Derive motion state from authoritative STATUS flags.
   // Guard: a STATUS packet sent just before the planner finished can arrive
   // after the STOP packet (different send tasks, 100ms vs 1kHz). Suppress
@@ -889,6 +965,7 @@ conn.onPacket = (packet: Packet): void => {
       updateDeviationGauge(packet.lag);
       holdPeakDev.textContent = `${store.moveStats.holdPeakDevDeg.toFixed(2)}°`;
     }
+
   } else if (packet.type === 'stop') {
     stopsReceived++;
     teleMeas.textContent = `${encToDeg(packet.pos).toFixed(1)}°`;
@@ -934,4 +1011,74 @@ conn.onPacket = (packet: Packet): void => {
 conn.onBlockDone = (pkt: BlockDonePacket): void => {
   store.snapshotBlock(pkt.blockIndex);
   queueRunner.onBlockDone(pkt.blockIndex);
+};
+
+// ── Homing result handler ────────────────────────────────────────────────────
+
+conn.onHomingDone = (pkt: HomingDonePacket): void => {
+  // All SG values are 0–1023 raw; halve to convert to SGTHRS (0–255) space.
+  // GUI trigger inputs are already in SGTHRS space.
+  const thresh1 = parseInt(setHomeSg1.value, 10) || 65;
+  const thresh2 = parseInt(setHomeSg2.value, 10) || 10;
+
+  const sgF  = pkt.sgMinFast  === 0xFFFF ? null : Math.round(pkt.sgMinFast  / 2);
+  const sgS  = pkt.sgMinSlow  === 0xFFFF ? null : Math.round(pkt.sgMinSlow  / 2);
+  const sgBF = pkt.sgBaseFast === 0xFFFF ? null : Math.round(pkt.sgBaseFast / 2);
+  const sgBS = pkt.sgBaseSlow === 0xFFFF ? null : Math.round(pkt.sgBaseSlow / 2);
+
+  // "Fast: approach 98 → trigger 65 → min 67"
+  const statsLine = (label: string, base: number | null, thresh: number, min: number | null): string | null => {
+    if (min === null) return null;
+    const parts: string[] = [];
+    if (base !== null) parts.push(`approach ${base}`);
+    parts.push(`trigger ${thresh}`);
+    parts.push(`~min ${min}`);
+    return `${label}: ${parts.join(' \u2192 ')}`;
+  };
+
+  const fastLine = statsLine('Fast', sgBF, thresh1, sgF);
+  const slowLine = statsLine('Slow', sgBS, thresh2, sgS);
+
+  let cls: string;
+  const lines: string[] = [];
+
+  switch (pkt.result) {
+    case 0:  // success
+      cls = 'ok';
+      lines.push('Homed');
+      teleMeas.textContent   = '0.0°';
+      teleTarget.textContent = '0.0°';
+      teleVel.textContent    = '0.0 RPM';
+      teleLag.textContent    = '0.00°';
+      break;
+    case 1:  // timeout — motor never reached endstop
+      cls = 'error';
+      lines.push('Timeout \u2014 no contact. Is endstop reachable?');
+      break;
+    case 2:  // instant stall — fired before minimum travel
+      cls = 'warn';
+      lines.push(sgS !== null
+        ? 'Premature stall (slow) \u2014 lower Slow Home Trigger'
+        : 'Premature stall (fast) \u2014 lower Fast Home Trigger or check start position');
+      break;
+    case 3:  // grinding — encoder stalled, SG never triggered
+      cls = 'error';
+      lines.push(sgS !== null
+        ? 'Grinding (slow) \u2014 raise Slow Home Trigger'
+        : 'Grinding (fast) \u2014 raise Fast Home Trigger');
+      break;
+    case 4:  // e-stop
+      cls = 'error';
+      lines.push('E-Stop during homing');
+      break;
+    default:
+      cls = 'error';
+      lines.push(pkt.errorMsg || 'Unknown homing error');
+  }
+
+  if (fastLine) lines.push(fastLine);
+  if (slowLine) lines.push(slowLine);
+
+  homingResultDiv.innerHTML = lines.join('<br>');
+  homingResultDiv.className = `homing-result ${cls}`;
 };

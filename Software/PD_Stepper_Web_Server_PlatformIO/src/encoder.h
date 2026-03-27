@@ -28,4 +28,12 @@ void read();
  */
 signed long getTotalCounts();
 
+/**
+ * @brief Reset the encoder position to zero.
+ * Zeros total_encoder_counts and revolutions under mutex.
+ * prev_raw_counts is left at its current value so the next read()
+ * computes the correct delta from the current physical position.
+ */
+void resetPosition();
+
 } // namespace encoder

@@ -8,7 +8,11 @@
 namespace tmc {
 static TMC2209 stepper_driver;
 static HardwareSerial serial_stream(2);
-static const long SERIAL_BAUD_RATE = 115200;
+// TMC2209 auto-detects baud rate from the sync byte timing on each frame.
+// We start slow so the chip has a reliable first handshake, then graduate to
+// the fast rate and send several sync frames so the TMC can re-lock.
+static const long BAUD_SLOW = 115200;   // safe boot speed (~1.0 ms/transaction)
+static const long BAUD_FAST = 250000;   // operating speed (~0.48 ms/transaction)
 
 // Mutex serialising all stepper_driver UART accesses.
 // Both PlannerTask (Core 0, pri 5) and loopTask (Core 0, pri 1) use the driver;
@@ -17,7 +21,7 @@ static const long SERIAL_BAUD_RATE = 115200;
 static SemaphoreHandle_t s_mutex = nullptr;
 
 // RAII guard: takes the mutex on construction, gives it back on destruction.
-// Timeout is generous (10 ms) — a TMC UART transaction takes ~1 ms at 115200.
+// Timeout is generous (10 ms) — transaction is ~0.48 ms at 250 kbaud.
 struct TmcLock {
     bool held;
     TmcLock() : held(s_mutex && xSemaphoreTake(s_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {}
@@ -26,10 +30,29 @@ struct TmcLock {
 };
 
 void init(int rx_pin, int tx_pin) {
-  s_mutex = xSemaphoreCreateMutex();
-  serial_stream.begin(SERIAL_BAUD_RATE, SERIAL_8N1, rx_pin, tx_pin);
-  stepper_driver.setup(serial_stream, SERIAL_BAUD_RATE,
-                       TMC2209::SERIAL_ADDRESS_0, rx_pin, tx_pin);
+    s_mutex = xSemaphoreCreateMutex();
+
+    // Phase 1: establish comms at safe slow speed
+    serial_stream.begin(BAUD_SLOW, SERIAL_8N1, rx_pin, tx_pin);
+    stepper_driver.setup(serial_stream, BAUD_SLOW,
+                         TMC2209::SERIAL_ADDRESS_0, rx_pin, tx_pin);
+    delay(50); // let UART and TMC boot settle
+
+    // Verify link with one read at slow speed
+    { TmcLock g; if (g) (void)stepper_driver.getStallGuardResult(); }
+    delay(10);
+
+    // Phase 2: switch to fast speed — TMC auto-detects from first incoming frame
+    serial_stream.begin(BAUD_FAST, SERIAL_8N1, rx_pin, tx_pin);
+    stepper_driver.setup(serial_stream, BAUD_FAST,
+                         TMC2209::SERIAL_ADDRESS_0, rx_pin, tx_pin);
+
+    // Send multiple sync frames so TMC can re-lock on the new baud rate
+    for (int i = 0; i < 8; i++) {
+        delay(10);
+        TmcLock g; if (g) (void)stepper_driver.getStallGuardResult();
+    }
+    delay(50); // final settle before caller configures registers
 }
 
 void setRunCurrent(int percent)    { TmcLock g; if (g) stepper_driver.setRunCurrent(percent); }

@@ -1,4 +1,5 @@
 #include "encoder.h"
+#include "homing.h"
 #include "motion_control.h"
 #include "pins.h"
 #include "step_generator.h"
@@ -177,6 +178,7 @@ void setup() {
   motion::init();
   motion::setMicrosteps(setMicrosteps);
   motion::setConfiguredVoltage((float)setVoltage); // derive brownout threshold
+  homing::init();
   sendSettingsPacket(); // send initial SETTINGS packet so GUI can populate panel
 
   Serial1.println("Setup complete");
@@ -399,6 +401,31 @@ void processSerialCommands() {
           } else if (strcmp(cmd, "estop") == 0) {
             motion::triggerEstop();
             Serial1.println("E-STOP triggered via serial");
+
+          } else if (strcmp(cmd, "home") == 0) {
+            if (motion::isRunning()) {
+              Serial1.println("ERR: 'home' rejected — motion in progress");
+            } else {
+              homing::HomingParams hp;
+              hp.directionCW      = strcmp(doc["direction"] | "cw", "cw") == 0;
+              hp.currentPct       = doc["current_pct"] | 65;
+              hp.speed1           = doc["speed1"] | 3000.0f;
+              hp.speed2           = doc["speed2"] | 500.0f;
+              hp.sgThresh1        = doc["sg_thresh1"] | 65;
+              hp.sgThresh2        = doc["sg_thresh2"] | 10;
+              hp.backoffSteps     = doc["backoff"] | 3200.0f;
+              hp.timeoutMs        = doc["timeout_ms"] | 10000;
+              // Fill restore settings from current main.cpp statics
+              hp.restoreCurrent     = setCurrent;
+              hp.restoreSgThresh    = setStall;
+              hp.restoreStealthchop = stealthchopEnabled;
+              hp.restoreCoolstep    = coolstepEnabled;
+              if (!homing::start(hp)) {
+                Serial1.println("ERR: homing already in progress");
+              } else {
+                Serial1.println("Homing started");
+              }
+            }
 
           } else if (strcmp(cmd, "save") == 0) {
             writeSettings();

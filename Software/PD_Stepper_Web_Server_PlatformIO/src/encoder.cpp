@@ -70,4 +70,13 @@ void EncoderTask(void *pvParameters) {
 
 signed long getTotalCounts() { return total_encoder_counts; }
 
+void resetPosition() {
+  if (xSemaphoreTake(encoderMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    revolutions = 0;
+    total_encoder_counts = 0;
+    // prev_raw_counts stays — next read() computes delta correctly
+    xSemaphoreGive(encoderMutex);
+  }
+}
+
 } // namespace encoder

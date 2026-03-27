@@ -10,7 +10,7 @@
  *   await conn.disconnect();
  */
 
-import { PacketParser, type Packet, type LinkStats, type SettingsPacket, type StatusPacket, type BlockDonePacket } from './protocol';
+import { PacketParser, type Packet, type LinkStats, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket } from './protocol';
 
 /** Milliseconds to drain stale bytes after port open (mirrors TriggerMove.py). */
 const DRAIN_MS = 150;
@@ -37,11 +37,12 @@ export class SerialConnection {
   private _writeChain: Promise<void> = Promise.resolve();
   private _transport: TransportStats = this._zeroTransport();
 
-  onPacket:           ((pkt: Packet)          => void) | null = null;
-  onSettings:         ((pkt: SettingsPacket)  => void) | null = null;
-  onStatus:           ((pkt: StatusPacket)    => void) | null = null;
-  onBlockDone:        ((pkt: BlockDonePacket) => void) | null = null;
-  onConnectionChange: ((connected: boolean)   => void) | null = null;
+  onPacket:           ((pkt: Packet)           => void) | null = null;
+  onSettings:         ((pkt: SettingsPacket)   => void) | null = null;
+  onStatus:           ((pkt: StatusPacket)     => void) | null = null;
+  onBlockDone:        ((pkt: BlockDonePacket)  => void) | null = null;
+  onHomingDone:       ((pkt: HomingDonePacket) => void) | null = null;
+  onConnectionChange: ((connected: boolean)    => void) | null = null;
 
   get isConnected(): boolean { return this._isConnected; }
 
@@ -60,10 +61,11 @@ export class SerialConnection {
   }
 
   constructor() {
-    this.parser.onPacket    = (pkt) => this.onPacket?.(pkt);
-    this.parser.onSettings  = (pkt) => this.onSettings?.(pkt);
-    this.parser.onStatus    = (pkt) => this.onStatus?.(pkt);
-    this.parser.onBlockDone = (pkt) => this.onBlockDone?.(pkt);
+    this.parser.onPacket     = (pkt) => this.onPacket?.(pkt);
+    this.parser.onSettings   = (pkt) => this.onSettings?.(pkt);
+    this.parser.onStatus     = (pkt) => this.onStatus?.(pkt);
+    this.parser.onBlockDone  = (pkt) => this.onBlockDone?.(pkt);
+    this.parser.onHomingDone = (pkt) => this.onHomingDone?.(pkt);
   }
 
   async connect(): Promise<void> {

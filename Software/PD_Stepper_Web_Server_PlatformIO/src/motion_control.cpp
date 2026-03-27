@@ -1,5 +1,6 @@
 #include "motion_control.h"
 #include "encoder.h"
+#include "homing.h"
 #include "pd_controller.h"
 #include "pins.h"
 #include "step_generator.h"
@@ -330,7 +331,7 @@ static void planChain(const MotionCommand* cmds, int n,
 static void DiagnosticsTask(void *) {
     for (;;) {
         // Option 4: 10 Hz during motion, 1 Hz at rest.
-        vTaskDelay(pdMS_TO_TICKS(s_running ? 100 : 1000));
+        vTaskDelay(pdMS_TO_TICKS((s_running || homing::isActive()) ? 100 : 1000));
 
         // TMC UART reads — Core 0, TmcLock-protected inside each call
         tmc::DriverStatus ds = tmc::getDriverStatus();
@@ -383,6 +384,7 @@ static void DiagnosticsTask(void *) {
             if (ds.over_temperature_shutdown)      fa |= (1 << 2);
             if (lagFault)                          fa |= (1 << 3);
             if (brownout)                          fa |= (1 << 5);
+            if (homing::isActive())                 fa |= (1 << 4); // isHoming
             if (holdActive)                        fa |= (1 << 6);
             if (running)                           fa |= (1 << 7); // isRunning bit (Option 2)
             buf[4] = fa;
@@ -720,6 +722,10 @@ static void ControlTask(void *) {
         g_meas_pos      = measPos; // share with Planner Task
 
         if (!s_running) {
+            if (homing::isActive()) {
+                // Homing owns the step generator — skip all idle/hold logic
+                continue;
+            }
             if (g_hold_active) {
                 // Hold state machine: CORRECTING → SETTLED
                 //
@@ -1009,6 +1015,69 @@ bool isBrownoutFault() { return g_fault_brownout; }
 bool isLagFault()      { return g_fault_lag; }
 bool isEstopFault()    { return g_fault_estop || g_fault_estop_gui; }
 
-void triggerEstop()    { g_fault_estop_gui = true; }
+void triggerEstop() {
+    g_fault_estop_gui = true;
+    stepgen::halt();          // stop step pulses immediately
+    g_hold_active = false;    // kill PD hold loop
+    tmc::disable();           // de-energize motor coils
+    s_driver_enabled = false; // PlannerTask will re-enable on next move
+}
+
+void resetPositions() {
+    g_meas_pos        = 0.0f;
+    g_target_pos      = 0.0f;
+    g_hold_target     = 0.0f;
+    g_hold_active     = false;
+    g_hold_state      = HOLD_CORRECTING;
+    g_settle_start_ms = 0;
+    g_fault_lag       = false;
+    g_fault_estop     = false;
+    g_fault_estop_gui = false;
+    g_fault_brownout  = false;
+}
+
+void sendHomingResult(uint8_t result, uint16_t sgMinFast, uint16_t sgMinSlow,
+                      uint16_t sgBaseFast, uint16_t sgBaseSlow,
+                      long finalPos, const char* errorMsg) {
+    // Packet 0xAE — HOMING_DONE (34 bytes total)
+    // [0]     0xAA
+    // [1]     0xAE
+    // [2]     result (u8)
+    // [3-4]   sgMinFast  (uint16 LE)
+    // [5-6]   sgMinSlow  (uint16 LE)
+    // [7-8]   sgBaseFast (uint16 LE)
+    // [9-10]  sgBaseSlow (uint16 LE)
+    // [11-14] finalPos   (int32 LE)
+    // [15-32] errorMsg   (18 bytes, null-padded)
+    // [33]    XOR checksum over bytes [2..32]
+    uint8_t buf[34];
+    buf[0] = 0xAA;
+    buf[1] = 0xAE;
+    buf[2] = result;
+
+    uint16_t sgf  = sgMinFast;
+    uint16_t sgs  = sgMinSlow;
+    uint16_t sgbf = sgBaseFast;
+    uint16_t sgbs = sgBaseSlow;
+    int32_t  fp   = (int32_t)finalPos;
+    memcpy(&buf[3],  &sgf,  2);
+    memcpy(&buf[5],  &sgs,  2);
+    memcpy(&buf[7],  &sgbf, 2);
+    memcpy(&buf[9],  &sgbs, 2);
+    memcpy(&buf[11], &fp,   4);
+
+    memset(&buf[15], 0, 18);
+    if (errorMsg && errorMsg[0]) {
+        strncpy((char*)&buf[15], errorMsg, 17);
+        buf[32] = '\0'; // ensure null terminator within field
+    }
+
+    uint8_t chk = 0;
+    for (int i = 2; i < 33; i++) chk ^= buf[i];
+    buf[33] = chk;
+
+    UsbWriteGuard guard;
+    if (guard) USBSerial.write(buf, sizeof(buf));
+}
 
 } // namespace motion
