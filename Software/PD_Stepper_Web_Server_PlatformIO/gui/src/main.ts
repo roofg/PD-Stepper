@@ -193,6 +193,20 @@ chkInvertAxis.checked = axisInverted;
 chkInvertAxis.addEventListener('change', () => {
   axisInverted = chkInvertAxis.checked;
   localStorage.setItem('axisInverted', String(axisInverted));
+  // Reset home position — jog accumulator and firmware position reference are
+  // now in the wrong sign; zeroing is the only safe state to resume from.
+  if (conn.isConnected) {
+    sendCmd({ cmd: 'reset_position' });
+  }
+  jogAbsTargetDeg = 0;
+  lastKnownPosEnc = 0;
+  lastMoveWasJog  = false;
+  const zeroPos = linearMode ? '0.00 mm' : '0.0°';
+  droPosition.textContent      = zeroPos;
+  droCommanded.textContent     = linearMode ? 'Target: 0.000 mm' : 'Target: 0.00°';
+  teleMeas.textContent         = zeroPos;
+  teleTarget.textContent       = zeroPos;
+  teleLag.textContent          = linearMode ? '0.000 mm' : '0.00°';
 });
 
 function setLinearMode(on: boolean): void {
