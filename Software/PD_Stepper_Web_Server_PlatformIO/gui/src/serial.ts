@@ -10,7 +10,7 @@
  *   await conn.disconnect();
  */
 
-import { PacketParser, type Packet, type LinkStats, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket } from './protocol';
+import { PacketParser, type Packet, type LinkStats, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket, type QueueStatusPacket } from './protocol';
 
 /** Milliseconds to drain stale bytes after port open (mirrors TriggerMove.py). */
 const DRAIN_MS = 150;
@@ -42,6 +42,7 @@ export class SerialConnection {
   onStatus:           ((pkt: StatusPacket)     => void) | null = null;
   onBlockDone:        ((pkt: BlockDonePacket)  => void) | null = null;
   onHomingDone:       ((pkt: HomingDonePacket) => void) | null = null;
+  onQueueStatus:      ((pkt: QueueStatusPacket) => void) | null = null;
   onConnectionChange: ((connected: boolean)    => void) | null = null;
 
   get isConnected(): boolean { return this._isConnected; }
@@ -64,8 +65,9 @@ export class SerialConnection {
     this.parser.onPacket     = (pkt) => this.onPacket?.(pkt);
     this.parser.onSettings   = (pkt) => this.onSettings?.(pkt);
     this.parser.onStatus     = (pkt) => this.onStatus?.(pkt);
-    this.parser.onBlockDone  = (pkt) => this.onBlockDone?.(pkt);
-    this.parser.onHomingDone = (pkt) => this.onHomingDone?.(pkt);
+    this.parser.onBlockDone   = (pkt) => this.onBlockDone?.(pkt);
+    this.parser.onHomingDone  = (pkt) => this.onHomingDone?.(pkt);
+    this.parser.onQueueStatus = (pkt) => this.onQueueStatus?.(pkt);
   }
 
   async connect(): Promise<void> {
@@ -138,7 +140,7 @@ export class SerialConnection {
           this._transport.drainBytes += value.length;
           continue;
         }
-        this.parser.feed(value);
+        try { this.parser.feed(value); } catch (e) { console.error('Packet callback error:', e); }
       }
     } catch {
       // Port disconnected unexpectedly — fall through to finally.

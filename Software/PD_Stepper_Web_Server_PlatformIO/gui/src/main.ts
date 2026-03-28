@@ -1,6 +1,6 @@
 import 'uplot/dist/uPlot.min.css';
 import { SerialConnection } from './serial';
-import { moveCommand, type Packet, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket } from './protocol';
+import { moveCommand, type Packet, type SettingsPacket, type StatusPacket, type BlockDonePacket, type HomingDonePacket, type QueueStatusPacket } from './protocol';
 import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
 import { encToDeg, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec, encToMm, mmToDeg, degToMm, encPerSecToMmPerSec, mmPerSecToRpm, mmPerSec2ToDegPerSec2, rpmToMmPerSec } from './units';
@@ -291,11 +291,7 @@ const queueRunner = new QueueRunner(queueStore, {
     btnJogPos.disabled = running;
     if (running && state === 'sending') {
       lastMoveWasJog = false;  // queue start: next jog after queue must re-sync
-      // On loop restarts the STOP handler already populated the performance panel
-      // with the just-completed iteration's stats.  Skip resetPerfAndHold() so
-      // they remain visible; still clear the store so the chart shows per-iteration
-      // data only.
-      if (!queueRunner.isLoopRestarting) resetPerfAndHold();
+      resetPerfAndHold();
       store.clear();
       chart.update(store);
       setMotionState('moving');
@@ -304,10 +300,20 @@ const queueRunner = new QueueRunner(queueStore, {
   onComplete: () => {
     lastMoveWasJog = false;  // queue moved to a new position; next jog must re-sync
     renderBlockStats();
+    // Deactivate loop button when firmware loop ends
+    if (queueRunner.loop) {
+      queueRunner.loop = false;
+      btnLoopQueue.classList.remove('active');
+    }
   },
   onAbort: (_reason) => {
     lastMoveWasJog = false;
     renderBlockStats();
+    // Deactivate loop button on fault
+    if (queueRunner.loop) {
+      queueRunner.loop = false;
+      btnLoopQueue.classList.remove('active');
+    }
   },
 });
 
@@ -715,8 +721,13 @@ btnRunQueue.addEventListener('click', () => {
   queueRunner.start();
 });
 
-// Loop toggle
+// Loop toggle / stop
 btnLoopQueue.addEventListener('click', () => {
+  if (queueRunner.isFirmwareLoop) {
+    // Loop is running on firmware — send stop command
+    queueRunner.stopFirmwareLoop();
+    return;
+  }
   queueRunner.loop = !queueRunner.loop;
   btnLoopQueue.classList.toggle('active', queueRunner.loop);
 });
@@ -1311,6 +1322,14 @@ conn.onPacket = (packet: Packet): void => {
 conn.onBlockDone = (pkt: BlockDonePacket): void => {
   store.snapshotBlock(pkt.blockIndex);
   queueRunner.onBlockDone(pkt.blockIndex);
+};
+
+// ── Queue status handler (streaming flow control) ────────────────────────────
+
+conn.onQueueStatus = (_pkt: QueueStatusPacket): void => {
+  // Exposes free ring buffer slots and planner state for future
+  // host-side streaming flow control. Currently a no-op on the GUI side;
+  // the host can use freeSlots to pace command injection.
 };
 
 // ── Homing result handler ────────────────────────────────────────────────────

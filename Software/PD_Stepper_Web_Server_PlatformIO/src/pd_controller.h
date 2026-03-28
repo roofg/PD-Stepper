@@ -1,6 +1,9 @@
 #pragma once
+
+#ifdef ARDUINO
 #include <Arduino.h>
-#include <math.h>
+#endif
+#include <cmath>
 
 // PD + feedforward + phase-lead controller.
 //
@@ -64,7 +67,7 @@ struct PDController {
         float error          = commanded_pos - measured_pos;
 
         // Deadband: suppress noise-driven correction when essentially on target
-        if (fabsf(error) < 1.5f) error = 0.0f;
+        if (std::fabs(error) < 1.5f) error = 0.0f;
 
         // Derivative (backward difference, guarded against dt ≈ 0)
         float raw_rate = (dt > 1e-6f) ? (error - prev_error) / dt : 0.0f;

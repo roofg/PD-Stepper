@@ -97,230 +97,26 @@ static TaskHandle_t      s_diagHandle    = nullptr;
 static TelemetryProvider *s_telemetry    = nullptr;
 
 // ---------------------------------------------------------------------------
-// Trajectory Planner
-//
-// Executes a single pre-planned block (produced by planChain()).  Entry and
-// exit velocities are guaranteed achievable by the planner — no reactive
-// junction clamping needed here.  The planner runs a simple trapezoidal
-// (S-curve smoothed) profile:
-//
-//   Phase 1  – accelerate from entryVel toward cruiseVel
-//   Phase 2  – coast at cruiseVel (may be absent for short segments)
-//   Phase 3  – decelerate from cruiseVel to exitVel
-//
-// isComplete() fires on a simple position crossing — no velocity window.
-// Any small velocity residual at the crossing is carried into the next block
-// and corrected by the PD control loop.
+// Loop pattern storage + planner state machine
 // ---------------------------------------------------------------------------
-class TrajectoryPlanner {
-public:
-    float currentPos = 0;
-    float currentVel = 0;
-    float currentAcc = 0;
-    float targetPos  = 0;
-
-private:
-    float cruiseVel  = 0;
-    float exitVel    = 0;
-    float maxA       = 0;
-    float jerk       = 0;
-    bool  moveForward = true;
-
-public:
-    // Reset for a new pre-planned block.
-    // currentPos/currentVel/currentAcc carry over from the previous block
-    // (velocity continuity). The caller must zero currentVel before the
-    // very first block.
-    void resetForBlock(float startPos, float endPos, const PlannedBlock& blk) {
-        currentPos  = startPos;
-        targetPos   = endPos;
-        cruiseVel   = blk.cruiseVel;
-        exitVel     = blk.exitVel;
-        maxA        = (blk.accel > 1.0f) ? blk.accel : 1.0f;
-        if (g_jerk_ramp_s > 0.0f) {
-            jerk = maxA / g_jerk_ramp_s;        // ramp-time mode: auto-scales with accel
-        } else if (g_jerk > 0.0f) {
-            jerk = g_jerk;                       // legacy absolute µsteps/s³
-        } else {
-            jerk = maxA * 100.0f;               // auto (~10 ms ramp, essentially trapezoidal)
-        }
-        moveForward = blk.forward;
-        currentAcc  = 0;
-        // currentVel intentionally preserved for velocity continuity
-    }
-
-    void update(float dt) {
-        float distToTarget = fabsf(targetPos - currentPos);
-        float spd          = fabsf(currentVel);
-
-        // Braking distance needed to decelerate from current speed to exitVel.
-        float brakeDist = 0;
-        if (spd > exitVel) {
-            brakeDist = (spd * spd - exitVel * exitVel) / (2.0f * maxA);
-        }
-
-        float targetAcc = 0.0f;
-
-        if (distToTarget < 5.0f && fabsf(spd - exitVel) < 20.0f) {
-            // Damping zone: servo velocity to exitVel; if stopped short, nudge toward target.
-            float signedExit = moveForward ? exitVel : -exitVel;
-            targetAcc = (signedExit - currentVel) * 10.0f;
-            // If motor has stopped short of target add a gentle position-proportional nudge
-            // so isComplete() can fire rather than hanging at ~0 velocity.
-            if (spd < 10.0f && distToTarget > 0.1f) {
-                float nudge = moveForward ? (distToTarget * 300.0f) : -(distToTarget * 300.0f);
-                targetAcc += nudge;
-            }
-            if (fabsf(targetAcc) > maxA) targetAcc = (targetAcc > 0) ? maxA : -maxA;
-        } else if (brakeDist >= distToTarget - _brakeLookahead(spd)) {
-            // Start braking with S-curve-aware lookahead (see _brakeLookahead).
-            targetAcc = (currentVel > 0) ? -maxA : maxA;
-        } else if (spd < cruiseVel) {
-            // Accelerate to cruise speed
-            targetAcc = moveForward ? maxA : -maxA;
-        }
-        // else: coast at cruiseVel
-
-        // S-curve jerk limit
-        if (currentAcc < targetAcc) {
-            currentAcc += jerk * dt;
-            if (currentAcc > targetAcc) currentAcc = targetAcc;
-        } else if (currentAcc > targetAcc) {
-            currentAcc -= jerk * dt;
-            if (currentAcc < targetAcc) currentAcc = targetAcc;
-        }
-
-        currentVel += currentAcc * dt;
-        // Clamp to ±cruiseVel
-        if (currentVel >  cruiseVel) { currentVel =  cruiseVel; currentAcc = 0; }
-        if (currentVel < -cruiseVel) { currentVel = -cruiseVel; currentAcc = 0; }
-
-        currentPos += currentVel * dt;
-    }
-
-    // Position crossing with a small tolerance for zero-exit-vel blocks.
-    // Allows isComplete() to fire when the motor stops fractionally short of the
-    // target (≤3 steps) due to S-curve undershoot; the hold PD then corrects it.
-    // For chained blocks with non-zero exitVel the tolerance is 0 (exact crossing).
-    bool isComplete() const {
-        float tol = (exitVel < 5.0f) ? 3.0f : 0.0f;
-        return moveForward ? (currentPos >= targetPos - tol)
-                           : (currentPos <= targetPos + tol);
-    }
-
-private:
-    // Dynamic braking lookahead that accounts for the S-curve jerk ramp.
-    //
-    // When braking triggers, currentAcc must ramp to the braking acceleration
-    // (-maxA for forward moves, +maxA for backward moves).  This ramp takes
-    // T = |currentAcc - brakeTarget| / jerk seconds.  During that window the
-    // motor continues at roughly constant velocity, traveling extra distance
-    // beyond what an instant-decel model predicts.
-    //
-    // Derivation (integrating the linear acc ramp):
-    //   extra overshoot ≈ jerk * T² * (spd/(2*maxA) + T/3)
-    //
-    // Adding 2 steps of margin gives the motor a ≤2-step undershoot that the
-    // damping zone + isComplete tolerance catch cleanly.
-    //
-    // NOTE: must handle both directions.
-    //   Forward decel: brakeTarget = -maxA; T = (currentAcc + maxA) / jerk
-    //   Backward decel: brakeTarget = +maxA; T = (maxA - currentAcc) / jerk
-    //   Unified:        T = |currentAcc - brakeTarget| / jerk
-    float _brakeLookahead(float spd) const {
-        float brakeTarget = (currentVel >= 0.0f) ? -maxA : maxA;
-        float T = fabsf(currentAcc - brakeTarget) / jerk;
-        return jerk * T * T * (spd / (2.0f * maxA) + T / 3.0f) + 2.0f;
-    }
-};
+static volatile PlannerState s_plannerState = PLANNER_IDLE;
+static MotionCommand   s_loopPattern[planner::MAX_CHAIN_LEN];
+static volatile int    s_loopLen       = 0;
+static volatile float  s_loopWrapVel   = 0.0f; // steady-state wrap junction velocity
+static volatile bool   s_stopRequested = false; // signal from stopLoop()/controlledStop()
 
 // ---------------------------------------------------------------------------
-// Marlin-style chain planner
-//
-// Computes globally-optimal entry/exit velocities for a sequence of moves
-// using a forward pass (kinematic achievability) followed by a reverse pass
-// (safe-stop propagation).
-//
-//   Forward pass:  entry[i+1] = min(desired_junction, sqrt(entry[i]^2 + 2*a[i]*d[i]))
-//   Reverse pass:  entry[i+1] = min(entry[i+1], sqrt(exit[i+1]^2 + 2*a[i+1]*d[i+1]))
-//                  exit[i]    = entry[i+1]
-//   Feasibility:   if exit[i] is below the minimum achievable (motor can't decelerate
-//                  fast enough), raise it to the kinematic minimum.
-//
-// cmds:     command array
-// n:        command count
-// startPos: absolute encoder position at chain start
-// out:      output array (at least n elements)
+// Trajectory Planner and Chain Planner — now in planner_core.h
+// Local aliases for convenience.
 // ---------------------------------------------------------------------------
-static const int MAX_CHAIN_LEN = 32;
+using planner::TrajectoryPlanner;
+using planner::JerkConfig;
 
-static void planChain(const MotionCommand* cmds, int n,
-                      float startPos, PlannedBlock* out) {
-    // ---- Populate blocks ----
-    float pos = startPos;
-    for (int i = 0; i < n; i++) {
-        float raw = cmds[i].absolute
-                    ? ((float)cmds[i].distance - pos)
-                    : (float)cmds[i].distance;
-        out[i].dist     = fabsf(raw);
-        out[i].forward  = (raw >= 0.0f);
-        out[i].cruiseVel = fabsf(cmds[i].maxSpeed);
-        out[i].accel     = fabsf(cmds[i].acceleration);
-        if (out[i].accel < 1.0f) out[i].accel = 1.0f;
-        out[i].entryVel  = 0.0f;
-        out[i].exitVel   = 0.0f;
-        pos += raw;
-    }
-
-    // ---- Forward pass ----
-    // Propagate maximum achievable entry velocity at each junction.
-    out[0].entryVel = 0.0f; // chain always starts from rest
-    for (int i = 1; i < n; i++) {
-        bool sameDir = (out[i-1].forward == out[i].forward);
-        float desired = sameDir
-            ? fminf(out[i-1].cruiseVel, out[i].cruiseVel)
-            : 0.0f; // direction reversal: must stop at boundary
-        float maxReach = sqrtf(out[i-1].entryVel * out[i-1].entryVel
-                               + 2.0f * out[i-1].accel * out[i-1].dist);
-        out[i].entryVel = fminf(desired, maxReach);
-        if (out[i].entryVel > out[i].cruiseVel) out[i].entryVel = out[i].cruiseVel;
-    }
-
-    // Provisional exit speeds = next block's entry (chain always ends at rest)
-    for (int i = 0; i < n - 1; i++) out[i].exitVel = out[i+1].entryVel;
-    out[n-1].exitVel = 0.0f;
-
-    // ---- Reverse pass ----
-    // Constrain entry speeds so the motor can always stop by chain end.
-    for (int i = n - 2; i >= 0; i--) {
-        float maxEntry = sqrtf(out[i+1].exitVel  * out[i+1].exitVel
-                               + 2.0f * out[i+1].accel * out[i+1].dist);
-        if (out[i+1].entryVel > maxEntry) out[i+1].entryVel = maxEntry;
-        out[i].exitVel = out[i+1].entryVel; // propagate back
-    }
-
-    // ---- Feasibility clamp ----
-    // After the reverse pass, a decelerating block's exit may have been lowered
-    // below what maximum deceleration can achieve (rare: only when a very short
-    // segment sits between two fast moves).  Raise exit to the physical minimum.
-    for (int i = 0; i < n; i++) {
-        if (out[i].entryVel > out[i].exitVel && out[i].dist > 0) {
-            float sq = out[i].entryVel * out[i].entryVel
-                       - 2.0f * out[i].accel * out[i].dist;
-            float minExit = (sq > 0.0f) ? sqrtf(sq) : 0.0f;
-            if (out[i].exitVel < minExit) {
-                out[i].exitVel = minExit;
-                if (i + 1 < n) out[i+1].entryVel = minExit;
-            }
-        }
-        // exitVel cannot exceed cruiseVel
-        if (out[i].exitVel > out[i].cruiseVel) out[i].exitVel = out[i].cruiseVel;
-
-        Serial1.printf("DBG:PLAN[%d] dist=%.0f fwd=%d entry=%.0f cruise=%.0f exit=%.0f\n",
-                       i, out[i].dist, (int)out[i].forward,
-                       out[i].entryVel, out[i].cruiseVel, out[i].exitVel);
-    }
+// Build a JerkConfig from the current volatile globals.
+static JerkConfig currentJerkConfig() {
+    return { g_jerk_ramp_s, g_jerk };
 }
+
 
 // ---------------------------------------------------------------------------
 // Diagnostics Task — Core 0, priority 2
@@ -456,6 +252,8 @@ static void TelemetryTask(void *) {
                 Serial1.printf("DBG:STOP_SENT bytes=%u\n", (unsigned)sent);
             } else if (d.type == TELEMETRY_BLOCK_DONE) {
                 s_telemetry->sendBlockDone(d.blockIndex, d.totalBlocks, d.pos);
+            } else if (d.type == TELEMETRY_QUEUE_STATUS) {
+                s_telemetry->sendQueueStatus(d.queueSlots, d.plannerState);
             } else {
                 s_telemetry->sendTelemetry(d);
             }
@@ -476,28 +274,50 @@ static void TelemetryTask(void *) {
 // ---------------------------------------------------------------------------
 // Planner Task — Core 0, priority 5, runs at 500 Hz during a move
 //
-// Offline block planner (Marlin-style):
+// Continuous event-loop planner (Marlin-style look-ahead):
 //   1. Wait for first command → enable TMC → 20 ms settle window
-//   2. Drain ALL queued commands into cmdBuf (up to MAX_CHAIN_LEN)
-//   3. planChain() → globally optimal block velocities (forward+reverse pass)
-//   4. Execute blocks sequentially; carry velocity/position across boundaries
-//   5. Single STOP packet after all blocks or on fault
+//   2. Append to ring buffer, plan, begin executing immediately
+//   3. On each 500 Hz tick: accept new commands, replan, generate trajectory
+//   4. Advance head when block completes; seamless velocity carry-over
+//   5. Single STOP packet when ring empties or on fault
 //
 // VBus brownout and StallGuard are checked at 200 ms intervals (UART/ADC
 // safe on Core 0; must NOT be called from ControlTask on Core 1).
 // ---------------------------------------------------------------------------
+
+// Helper: convert a MotionCommand to a BlockEntry and append to ring.
+// tailPos is updated to the end position of the new block.
+static void appendCommandToRing(const MotionCommand& cmd,
+                                planner::BlockRingBuffer& ring,
+                                float& tailPos) {
+    planner::BlockEntry entry = {};
+    float raw = cmd.absolute
+                ? ((float)cmd.distance - tailPos)
+                : (float)cmd.distance;
+    entry.plan.dist      = std::fabs(raw);
+    entry.plan.forward   = (raw >= 0.0f);
+    entry.plan.cruiseVel = std::fabs(cmd.maxSpeed);
+    entry.plan.accel     = std::fabs(cmd.acceleration);
+    if (entry.plan.accel < 1.0f) entry.plan.accel = 1.0f;
+    entry.plan.entryVel  = 0.0f;
+    entry.plan.exitVel   = 0.0f;
+    entry.startPos = tailPos;
+    tailPos += raw;
+    entry.endPos = tailPos;
+    ring.append(entry);
+}
+
 static void PlannerTask(void *) {
-    MotionCommand    cmdBuf[MAX_CHAIN_LEN];
-    PlannedBlock     blocks[MAX_CHAIN_LEN];
+    MotionCommand cmd;
+    planner::BlockRingBuffer ring;
     TrajectoryPlanner planner;
 
     float uSteps          = 32.0f;
     float counts_to_steps = (200.0f * uSteps) / 4096.0f;
-    (void)counts_to_steps; // updated per-chain; referenced via g_uSteps_setting in ControlTask
 
     for (;;) {
         // ---- Wait for first command ----
-        if (xQueueReceive(s_motionQueue, &cmdBuf[0], portMAX_DELAY) != pdPASS) continue;
+        if (xQueueReceive(s_motionQueue, &cmd, portMAX_DELAY) != pdPASS) continue;
 
         // ---- TMC enable (first move only) + settle ----
         uSteps          = (float)g_uSteps_setting;
@@ -505,147 +325,256 @@ static void PlannerTask(void *) {
         counts_to_steps = (200.0f * uSteps) / 4096.0f;
 
         g_hold_active = false; // suspend active hold during move
-        g_hold_state = HOLD_CORRECTING; // reset state machine for next hold
+        g_hold_state = HOLD_CORRECTING;
         g_settle_start_ms = 0;
         if (!s_driver_enabled) {
             tmc::enable();
-            vTaskDelay(pdMS_TO_TICKS(20)); // wait for driver rails to stabilise
+            vTaskDelay(pdMS_TO_TICKS(20));
             s_driver_enabled = true;
         }
 
-        // ---- Drain all queued commands ----
-        // If the last received command has chain=true, wait up to 50 ms for
-        // the next command to arrive (the serial parser may not have enqueued
-        // it yet).  Without this, back-to-back chain commands sent from the
-        // host can be split into separate single-command executions.
-        int nCmds = 1;
-        while (nCmds < MAX_CHAIN_LEN) {
-            TickType_t wait = cmdBuf[nCmds - 1].chain ? pdMS_TO_TICKS(50) : 0;
-            if (xQueueReceive(s_motionQueue, &cmdBuf[nCmds], wait) == pdPASS) {
-                nCmds++;
-            } else {
-                break;
-            }
-        }
-        Serial1.printf("DBG:PLANNER %d cmd(s) queued\n", nCmds);
+        // ---- Determine mode: loop or streaming ----
+        bool isLoop = (s_plannerState == PLANNER_LOOP_RUNNING);
+        int  loopIdx = 0;     // next pattern index for refill
+        float wrapVel = 0.0f; // steady-state loop wrap junction velocity
 
-        // ---- planChain: compute globally-optimal block velocities ----
         float chainStartPos = g_hold_target;
-        planChain(cmdBuf, nCmds, chainStartPos, blocks);
+        float tailPos = chainStartPos;
+        ring.clear();
 
-        // ---- Reset faults and drain any stale telemetry from the previous run ----
-        // PlannerTask (pri 5) never yields between enqueueing the previous STOP and
-        // picking up a new command (both are on Core 0 with no blocking call between).
-        // xQueueReset here ensures TelemetryTask cannot deliver a previous run's STOP
-        // packet while this run is already producing UPDATE packets.  Safe to call:
-        // ControlTask does not enqueue UPDATE packets until s_running is true (set below).
+        if (isLoop) {
+            // Loop mode: fill ring from stored pattern
+            int loopLen = s_loopLen;
+            while (!ring.isFull() && loopIdx < loopLen) {
+                appendCommandToRing(s_loopPattern[loopIdx], ring, tailPos);
+                loopIdx++;
+            }
+            // Keep filling with subsequent pattern iterations
+            while (!ring.isFull()) {
+                appendCommandToRing(s_loopPattern[loopIdx % loopLen], ring, tailPos);
+                loopIdx++;
+            }
+
+            // Compute steady-state wrap junction velocity using planLoop()
+            // on a single period of the pattern.
+            {
+                planner::BlockRingBuffer tempRing;
+                float tempTail = 0.0f;
+                for (int i = 0; i < loopLen; i++) {
+                    appendCommandToRing(s_loopPattern[i], tempRing, tempTail);
+                }
+                planner::planLoop(tempRing);
+                wrapVel = tempRing.at(0).plan.entryVel;
+                s_loopWrapVel = wrapVel;
+            }
+
+            // Plan the full ring: starts from rest, tail connects to next iteration
+            planner::incrementalPlan(ring, 0.0f, wrapVel);
+            Serial1.printf("DBG:LOOP_START %d pattern cmds, wrapVel=%.0f, ring=%d\n",
+                           loopLen, wrapVel, ring.count());
+        } else {
+            // Streaming mode: fill from command queue.
+            // If the latest command has chain=true, wait up to 10 ms for the
+            // next command — the serial parser may not have enqueued it yet.
+            // Without this, back-to-back chain commands from the host can be
+            // split into separate single-command executions.
+            s_plannerState = PLANNER_RUNNING;
+            appendCommandToRing(cmd, ring, tailPos);
+            while (!ring.isFull()) {
+                TickType_t wait = cmd.chain ? pdMS_TO_TICKS(10) : 0;
+                if (xQueueReceive(s_motionQueue, &cmd, wait) == pdPASS) {
+                    appendCommandToRing(cmd, ring, tailPos);
+                } else {
+                    break;
+                }
+            }
+            planner::incrementalPlan(ring);
+            Serial1.printf("DBG:PLANNER %d cmd(s) initial\n", ring.count());
+        }
+
+        for (int i = 0; i < ring.count() && i < 8; i++) {
+            const auto& blk = ring.at(i).plan;
+            Serial1.printf("DBG:PLAN[%d] dist=%.0f fwd=%d entry=%.0f cruise=%.0f exit=%.0f\n",
+                           i, blk.dist, (int)blk.forward,
+                           blk.entryVel, blk.cruiseVel, blk.exitVel);
+        }
+
+        // ---- Reset faults ----
         g_fault_lag = g_fault_estop = g_fault_estop_gui = g_fault_brownout = false;
         xQueueReset(s_teleQueue);
         s_running   = true;
+        s_stopRequested = false;
 
         char     stopReason[32] = "Completed";
         uint32_t lastVBusMs    = millis();
         uint32_t lastSGMs      = millis();
         uint32_t prevPlanUs    = micros();
         TickType_t xLastWake   = xTaskGetTickCount();
+        int      blocksExecuted = 0;
 
-        // ---- Execute each block sequentially ----
-        float blockStartPos = chainStartPos;
+        // ---- Start executing head block ----
         planner.currentVel = 0.0f;
         planner.currentAcc = 0.0f;
+        {
+            const auto& be = ring.peekHead();
+            planner.resetForBlock(be.startPos, be.endPos, be.plan, currentJerkConfig());
+            g_target_pos = be.endPos;
+            Serial1.printf("DBG:BLOCK[0] start=%.0f end=%.0f entry=%.0f exit=%.0f\n",
+                           be.startPos, be.endPos, be.plan.entryVel, be.plan.exitVel);
+        }
 
-        for (int bi = 0; bi < nCmds && s_running; bi++) {
-            const PlannedBlock& blk = blocks[bi];
+        // ---- Continuous event loop at 500 Hz ----
+        while (s_running) {
+            // 0. Controlled stop request (loop_stop or stop command)
+            if (s_stopRequested) {
+                float curVel   = std::fabs(planner.currentVel);
+                float curAccel = ring.isEmpty() ? 5000.0f : ring.peekHead().plan.accel;
+                bool  fwd      = (planner.currentVel >= 0.0f);
 
-            float blockEndPos = blockStartPos + (blk.forward ? blk.dist : -blk.dist);
-            planner.resetForBlock(blockStartPos, blockEndPos, blk);
-            g_target_pos = blockEndPos;
+                planner::injectStopBlock(ring, planner.currentPos, curVel, curAccel, fwd);
+                s_stopRequested = false;
+                isLoop = false; // no more refilling
+                s_plannerState = (s_plannerState == PLANNER_LOOP_RUNNING)
+                                 ? PLANNER_LOOP_STOPPING : PLANNER_STOPPING;
 
-            trajbuf::clear();
-            prevPlanUs = micros();
-            xLastWake  = xTaskGetTickCount();
+                if (!ring.isEmpty()) {
+                    const auto& be = ring.peekHead();
+                    planner.resetForBlock(planner.currentPos, be.endPos, be.plan, currentJerkConfig());
+                    g_target_pos = be.endPos;
+                    Serial1.printf("DBG:STOP_INJECT dist=%.0f from vel=%.0f\n",
+                                   be.plan.dist, curVel);
+                } else {
+                    // Already stopped
+                    strncpy(stopReason, "Stopped", 31);
+                    s_running = false;
+                    break;
+                }
+            }
 
-            Serial1.printf("DBG:BLOCK[%d] start=%.0f end=%.0f entry=%.0f exit=%.0f\n",
-                           bi, blockStartPos, blockEndPos, blk.entryVel, blk.exitVel);
+            // 1. Accept new commands (streaming mode only)
+            if (!isLoop) {
+                bool newCmds = false;
+                while (!ring.isFull()) {
+                    if (xQueueReceive(s_motionQueue, &cmd, 0) == pdPASS) {
+                        appendCommandToRing(cmd, ring, tailPos);
+                        newCmds = true;
+                    } else {
+                        break;
+                    }
+                }
+                if (newCmds) {
+                    planner::incrementalPlan(ring, ring.at(0).plan.entryVel);
+                    // Update the executing block's exit velocity in the trajectory
+                    // planner so it adjusts braking on the fly. Without this, the
+                    // planner would continue targeting exitVel=0 from the initial plan.
+                    planner.updateExitVel(ring.at(0).plan.exitVel);
+                    Serial1.printf("DBG:REPLAN %d blocks exitVel=%.0f\n",
+                                   ring.count(), ring.at(0).plan.exitVel);
+                }
+            }
 
-            // -- Inner loop: run this block at 500 Hz --
-            while (s_running) {
-                uint32_t nowUs = micros();
-                float dt = (float)(nowUs - prevPlanUs) * 1e-6f;
-                if (dt > 0.005f) dt = 0.005f;
-                if (dt < 0.0001f) dt = 0.001f;
-                prevPlanUs = nowUs;
+            // 2. Generate trajectory point
+            uint32_t nowUs = micros();
+            float dt = (float)(nowUs - prevPlanUs) * 1e-6f;
+            if (dt > 0.005f) dt = 0.005f;
+            if (dt < 0.0001f) dt = 0.001f;
+            prevPlanUs = nowUs;
 
-                planner.update(dt);
+            planner.update(dt);
 
-                TrajectoryPoint pt;
-                pt.pos = planner.currentPos;
-                pt.vel = planner.currentVel;
-                pt.acc = planner.currentAcc;
-                trajbuf::push(pt);
+            TrajectoryPoint pt;
+            pt.pos = planner.currentPos;
+            pt.vel = planner.currentVel;
+            pt.acc = planner.currentAcc;
+            trajbuf::push(pt);
 
-                // VBus brownout check (200 ms)
-                if (millis() - lastVBusMs >= 200) {
-                    lastVBusMs = millis();
-                    float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
-                    float vbus    = (vbus_mv / 1000.0f) / DIV_RATIO;
-                    if (vbus < g_brownout_threshold_v) g_fault_brownout = true;
+            // 3. VBus brownout check (200 ms)
+            if (millis() - lastVBusMs >= 200) {
+                lastVBusMs = millis();
+                float vbus_mv = (float)analogReadMilliVolts(VBUS_PIN);
+                float vbus    = (vbus_mv / 1000.0f) / DIV_RATIO;
+                if (vbus < g_brownout_threshold_v) g_fault_brownout = true;
+            }
+
+            // StallGuard check (200 ms)
+            if (millis() - lastSGMs >= 200) {
+                lastSGMs    = millis();
+                g_sg_result = (uint16_t)tmc::getStallGuardResult();
+            }
+
+            // 4. Fault handling
+            if (g_fault_lag)          { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
+            if (g_fault_estop)        { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
+            if (g_fault_estop_gui)    { strncpy(stopReason, "E-STOP (GUI)",   31); s_running = false; }
+            if (g_fault_brownout)     { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
+            if (!s_running) break;
+
+            // 5. Block complete?
+            if (planner.isComplete()) {
+                Serial1.printf("DBG:BLOCK_DONE vel=%.1f pos=%.1f tgt=%.1f\n",
+                               planner.currentVel, planner.currentPos, planner.targetPos);
+                blocksExecuted++;
+
+                // Send BLOCK_DONE marker (not after the very last block)
+                if (s_teleQueue && ring.count() > 1) {
+                    TelemetryData bd = {};
+                    bd.type = TELEMETRY_BLOCK_DONE;
+                    bd.blockIndex  = (uint8_t)(blocksExecuted - 1);
+                    bd.totalBlocks = (uint8_t)(blocksExecuted + ring.count() - 1);
+                    bd.pos = (long)(planner.currentPos);
+                    xQueueSend(s_teleQueue, &bd, pdMS_TO_TICKS(50));
                 }
 
-                // StallGuard check (200 ms)
-                if (millis() - lastSGMs >= 200) {
-                    lastSGMs    = millis();
-                    g_sg_result = (uint16_t)tmc::getStallGuardResult();
+                ring.advanceHead();
+
+                // Emit QUEUE_STATUS so the host knows how many slots are free
+                if (s_teleQueue && !isLoop) {
+                    TelemetryData qs = {};
+                    qs.type = TELEMETRY_QUEUE_STATUS;
+                    qs.queueSlots  = (uint8_t)(planner::BLOCK_RING_SIZE - ring.count());
+                    qs.plannerState = (uint8_t)s_plannerState;
+                    xQueueSend(s_teleQueue, &qs, 0); // non-blocking
                 }
 
-                // Fault handling
-                if (g_fault_lag)          { strncpy(stopReason, "Lag Fault",      31); s_running = false; }
-                if (g_fault_estop)        { strncpy(stopReason, "E-STOP (SW1)",   31); s_running = false; }
-                if (g_fault_estop_gui)    { strncpy(stopReason, "E-STOP (GUI)",   31); s_running = false; }
-                if (g_fault_brownout)     { strncpy(stopReason, "Brownout Fault", 31); s_running = false; }
-                if (!s_running) break;
+                // Loop refill: keep ring full from pattern
+                if (isLoop) {
+                    int loopLen = s_loopLen;
+                    while (!ring.isFull()) {
+                        appendCommandToRing(s_loopPattern[loopIdx % loopLen], ring, tailPos);
+                        loopIdx++;
+                    }
+                    // Replan with committed head velocity and loop wrap exit
+                    planner::incrementalPlan(ring, ring.at(0).plan.entryVel, wrapVel);
+                }
 
-                // Block complete: position crossing (with small zero-exit-vel tolerance)
-                if (planner.isComplete()) {
-                    Serial1.printf("DBG:BLOCK_DONE vel=%.1f pos=%.1f tgt=%.1f\n",
-                                   planner.currentVel, planner.currentPos, planner.targetPos);
+                if (ring.isEmpty()) {
+                    strncpy(stopReason, "Completed", 31);
                     break;
                 }
 
-                vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
+                // Start next block — velocity and position carry over seamlessly
+                const auto& be = ring.peekHead();
+                planner.resetForBlock(planner.currentPos, be.endPos, be.plan, currentJerkConfig());
+                g_target_pos = be.endPos;
+                Serial1.printf("DBG:BLOCK[%d] start=%.0f end=%.0f entry=%.0f exit=%.0f\n",
+                               blocksExecuted, planner.currentPos, be.endPos,
+                               be.plan.entryVel, be.plan.exitVel);
             }
 
-            // Carry planner position to next block start (velocity is already live in planner)
-            blockStartPos = planner.currentPos;
-
-            // Send BLOCK_DONE marker between chain blocks (not after the last)
-            if (s_teleQueue && bi < nCmds - 1) {
-                TelemetryData bd = {};
-                bd.type = TELEMETRY_BLOCK_DONE;
-                bd.blockIndex = (uint8_t)bi;
-                bd.totalBlocks = (uint8_t)nCmds;
-                bd.pos = (long)(blockStartPos);
-                xQueueSend(s_teleQueue, &bd, pdMS_TO_TICKS(50));
-            }
-
-            // Option C streaming hook: if more commands arrive here, append to blocks[] and
-            // re-run planChain() over the remaining+new commands for seamless continuation.
+            vTaskDelayUntil(&xLastWake, pdMS_TO_TICKS(2));
         }
 
         // ---- Exit: stop trajectory following immediately ----
-        s_running = false;  // ControlTask stops issuing trajectory commands on next tick
+        s_running = false;
+        s_plannerState = PLANNER_IDLE;
         stepgen::halt();
         Serial1.printf("DBG:PLANNER_DONE reason=%s\n", stopReason);
 
         bool faulted = g_fault_lag || g_fault_estop || g_fault_estop_gui || g_fault_brownout;
         if (!faulted) {
-            // Normal completion — enter active hold so PD loop corrects drift
             g_hold_target = g_target_pos;
             g_hold_active = true;
         } else {
-            // Fault — disable driver for safety, do NOT enter active hold.
-            // Resync g_hold_target to the encoder (actual) position so that
-            // chainStartPos on the next move is correct even after step loss.
             g_hold_target = g_meas_pos;
             g_hold_active = false;
             tmc::disable();
@@ -653,17 +582,12 @@ static void PlannerTask(void *) {
             Serial1.printf("DBG:FAULT_TMC_DISABLED\n");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50)); // brief settle
-
         // Route STOP through the telemetry queue so TelemetryTask owns all
-        // USBSerial writes.  Calling sendStop() directly here (from PlannerTask)
-        // while TelemetryTask may concurrently be inside sendTelemetry() causes
-        // interleaved bytes on the USB CDC TX buffer — Python never sees a clean
-        // 0xAA 0xCC header.  Using the queue serialises the writes by FIFO order.
+        // USBSerial writes — prevents interleaved bytes on CDC TX buffer.
         if (s_teleQueue) {
             TelemetryData stopData = {};
             stopData.type = TELEMETRY_STOP;
-            stopData.pos  = (long)(g_meas_pos / counts_to_steps); // encoder-count scale
+            stopData.pos  = (long)(g_meas_pos / counts_to_steps);
             strncpy(stopData.stopReason, stopReason, sizeof(stopData.stopReason) - 1);
             Serial1.printf("DBG:STOP_QUEUED pos=%ld reason=%s\n", stopData.pos, stopReason);
             if (xQueueSend(s_teleQueue, &stopData, pdMS_TO_TICKS(200)) != pdPASS) {
@@ -1018,6 +942,27 @@ bool addCommand(long distance, float acceleration, float maxSpeed, bool absolute
     MotionCommand cmd = {distance, acceleration, maxSpeed, absolute, chain};
     return xQueueSend(s_motionQueue, &cmd, 0) == pdPASS;
 }
+
+bool startLoop(const MotionCommand* cmds, int n) {
+    if (s_running || n < 1 || n > planner::MAX_CHAIN_LEN) return false;
+    memcpy(s_loopPattern, cmds, n * sizeof(MotionCommand));
+    s_loopLen = n;
+    s_plannerState = PLANNER_LOOP_RUNNING;
+    // Send a dummy command to wake PlannerTask from its blocking xQueueReceive.
+    // PlannerTask checks s_plannerState and enters loop mode.
+    MotionCommand wake = {0, 1000.0f, 1000.0f, false, false};
+    return xQueueSend(s_motionQueue, &wake, 0) == pdPASS;
+}
+
+void stopLoop() {
+    s_stopRequested = true;
+}
+
+void controlledStop() {
+    s_stopRequested = true;
+}
+
+PlannerState getPlannerState() { return s_plannerState; }
 
 bool isRunning() { return s_running; }
 bool isHoldActive() { return g_hold_active; }

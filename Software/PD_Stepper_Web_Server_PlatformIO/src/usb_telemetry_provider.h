@@ -130,6 +130,18 @@ public:
     return guard ? USBSerial.write(buf, sizeof(buf)) : 0;
   }
 
+  size_t sendQueueStatus(uint8_t freeSlots, uint8_t plannerState) override {
+    uint8_t buf[5];
+    buf[0] = 0xAA;
+    buf[1] = 0xBE;  // QUEUE_STATUS marker
+    buf[2] = freeSlots;
+    buf[3] = plannerState;
+    buf[4] = buf[2] ^ buf[3];  // XOR checksum over payload
+
+    UsbWriteGuard guard;
+    return guard ? USBSerial.write(buf, sizeof(buf)) : 0;
+  }
+
   size_t sendStop(const char *reason, long pos) override {
     uint8_t buf[38];
     buf[0] = 0xAA;

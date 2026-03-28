@@ -1,28 +1,14 @@
 #pragma once
 
+#include "planner_core.h"
 #include "telemetry_provider.h"
 #include <Arduino.h>
 
 namespace motion {
 
-struct MotionCommand {
-    long  distance;      // Relative distance or absolute target in microsteps
-    float acceleration;  // Max acceleration  (microsteps/sec²)
-    float maxSpeed;      // Max velocity       (microsteps/sec)
-    bool  absolute;      // true → distance is an absolute position
-    bool  chain;         // true → do not stop/disable at move end; transition to next queued command
-};
-
-// Pre-planned motion block produced by planChain().
-// entry/exit velocities are globally optimal (Marlin-style forward+reverse pass).
-struct PlannedBlock {
-    float dist;      // unsigned distance (steps)
-    float entryVel;  // speed at block start (steps/s, ≥ 0)
-    float cruiseVel; // maximum speed within block (steps/s)
-    float exitVel;   // speed at block end (steps/s, ≥ 0)
-    float accel;     // acceleration magnitude (steps/s²)
-    bool  forward;   // true = positive direction
-};
+// Re-export planner types into the motion namespace for backward compatibility
+using MotionCommand = planner::MotionCommand;
+using PlannedBlock  = planner::PlannedBlock;
 
 // Inject the telemetry provider before calling init().
 void setTelemetryProvider(TelemetryProvider *provider);
@@ -79,6 +65,30 @@ void init();
 // opposite direction → zero-velocity handoff with no TMC disable cycle).
 bool addCommand(long distance, float acceleration, float maxSpeed,
                 bool absolute = false, bool chain = false);
+
+// Planner state machine
+enum PlannerState : uint8_t {
+    PLANNER_IDLE         = 0,
+    PLANNER_RUNNING      = 1,  // streaming/chain execution
+    PLANNER_LOOP_RUNNING = 2,  // loop auto-refill active
+    PLANNER_LOOP_STOPPING= 3,  // loop deceleration in progress
+    PLANNER_STOPPING     = 4,  // streaming controlled stop
+};
+
+// Start a loop: store the command pattern and begin continuous execution.
+// Commands are executed cyclically with velocity continuity at the wrap boundary.
+// Returns false if motion is already in progress or n is invalid.
+bool startLoop(const MotionCommand* cmds, int n);
+
+// Stop the current loop: decelerate to zero and enter hold.
+void stopLoop();
+
+// Controlled stop: decelerate to zero from current velocity.
+// Works in both streaming and loop modes.
+void controlledStop();
+
+// Query the planner state machine.
+PlannerState getPlannerState();
 
 // Returns true while a move is in progress.
 bool isRunning();

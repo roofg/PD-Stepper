@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-enum TelemetryType { TELEMETRY_UPDATE, TELEMETRY_STOP, TELEMETRY_BLOCK_DONE };
+enum TelemetryType { TELEMETRY_UPDATE, TELEMETRY_STOP, TELEMETRY_BLOCK_DONE, TELEMETRY_QUEUE_STATUS };
 
 struct TelemetryData {
   TelemetryType type;
@@ -22,6 +22,8 @@ struct TelemetryData {
   int16_t  mvel;         // measured encoder velocity (encoder counts/s)
   uint8_t  blockIndex;   // BLOCK_DONE: 0-based block index within chain
   uint8_t  totalBlocks;  // BLOCK_DONE: total blocks in chain
+  uint8_t  queueSlots;   // QUEUE_STATUS: free slots in block ring buffer
+  uint8_t  plannerState; // QUEUE_STATUS: PlannerState enum value
 };
 
 #endif

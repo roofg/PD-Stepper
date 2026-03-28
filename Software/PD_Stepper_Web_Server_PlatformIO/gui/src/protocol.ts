@@ -11,20 +11,22 @@
  *   STATUS   0xAA 0xDD  20 bytes total
  */
 
-const SYNC         = 0xaa;
-const UPDATE_T     = 0xbb;
-const STOP_T       = 0xcc;
-const SETTINGS_T   = 0xee;
-const STATUS_T     = 0xdd;
-const BLOCK_DONE_T = 0xff;
+const SYNC            = 0xaa;
+const UPDATE_T        = 0xbb;
+const STOP_T          = 0xcc;
+const SETTINGS_T      = 0xee;
+const STATUS_T        = 0xdd;
+const BLOCK_DONE_T    = 0xff;
 const HOMING_DONE_T   = 0xae;
+const QUEUE_STATUS_T  = 0xbe;
 
-const UPDATE_LEN     = 33;
-const STOP_LEN       = 38;
-const SETTINGS_LEN   = 27;
-const STATUS_LEN     = 20;
-const BLOCK_DONE_LEN = 10;
-const HOMING_DONE_LEN = 34;
+const UPDATE_LEN       = 33;
+const STOP_LEN         = 38;
+const SETTINGS_LEN     = 27;
+const STATUS_LEN       = 20;
+const BLOCK_DONE_LEN   = 10;
+const HOMING_DONE_LEN  = 34;
+const QUEUE_STATUS_LEN = 5;
 
 export interface TelemetryUpdate {
   type: 'update';
@@ -64,6 +66,12 @@ export interface HomingDonePacket {
   sgBaseSlow: number;
   finalPos:   number;    // encoder counts
   errorMsg:   string;
+}
+
+export interface QueueStatusPacket {
+  type: 'queue_status';
+  freeSlots:    number;   // available slots in the block ring buffer (0–24)
+  plannerState: number;   // PlannerState enum: 0=IDLE 1=RUNNING 2=LOOP_RUNNING 3=LOOP_STOPPING 4=STOPPING
 }
 
 export type Packet = TelemetryUpdate | StopPacket;
@@ -132,11 +140,12 @@ export interface LinkStats {
 
 export class PacketParser {
   private buf: number[] = [];
-  onPacket:     ((pkt: Packet) => void) | null = null;
-  onSettings:   ((pkt: SettingsPacket) => void) | null = null;
-  onStatus:     ((pkt: StatusPacket)   => void) | null = null;
-  onBlockDone:  ((pkt: BlockDonePacket) => void) | null = null;
-  onHomingDone: ((pkt: HomingDonePacket) => void) | null = null;
+  onPacket:      ((pkt: Packet) => void) | null = null;
+  onSettings:    ((pkt: SettingsPacket) => void) | null = null;
+  onStatus:      ((pkt: StatusPacket)   => void) | null = null;
+  onBlockDone:   ((pkt: BlockDonePacket) => void) | null = null;
+  onHomingDone:  ((pkt: HomingDonePacket) => void) | null = null;
+  onQueueStatus: ((pkt: QueueStatusPacket) => void) | null = null;
 
   private _stats: LinkStats = this._zeroStats();
   private _lastUpdateWallMs = 0;
@@ -357,6 +366,24 @@ export class PacketParser {
           errorMsg,
         });
 
+      } else if (type === QUEUE_STATUS_T) {
+        if (this.buf.length < QUEUE_STATUS_LEN) return;
+        // Validate XOR checksum over bytes [2..3]
+        const chk = this.buf[2] ^ this.buf[3];
+        if (chk !== this.buf[4]) {
+          this._stats.checksumErrors++;
+          if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
+          this.buf.shift();
+          continue;
+        }
+        this._wasDiscarding = false;
+        const pkt = this.buf.splice(0, QUEUE_STATUS_LEN);
+        this.onQueueStatus?.({
+          type:         'queue_status',
+          freeSlots:    pkt[2],
+          plannerState: pkt[3],
+        });
+
       } else {
         if (!this._wasDiscarding) { this._stats.resyncEvents++; this._wasDiscarding = true; }
         this.buf.shift(); // unknown second byte — skip sync and rescan
@@ -373,6 +400,24 @@ export function moveCommand(
   chain = false,
 ): string {
   return JSON.stringify({ cmd: 'move', distance, speed, accel, abs, chain }) + '\n';
+}
+
+/** Build a firmware-side loop command.
+ *  Each move in `commands` is {distance, speed, accel, abs?}. */
+export function loopCommand(
+  commands: Array<{ distance: number; speed: number; accel: number; abs?: boolean }>,
+): string {
+  return JSON.stringify({ cmd: 'loop', commands }) + '\n';
+}
+
+/** Request a controlled stop of the running loop. */
+export function loopStopCommand(): string {
+  return JSON.stringify({ cmd: 'loop_stop' }) + '\n';
+}
+
+/** Request a controlled stop (works for both streaming and loop modes). */
+export function stopCommand(): string {
+  return JSON.stringify({ cmd: 'stop' }) + '\n';
 }
 
 export function setCurrentCommand(percent: number): string {

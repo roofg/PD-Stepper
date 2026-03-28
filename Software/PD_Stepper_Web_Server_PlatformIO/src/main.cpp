@@ -409,6 +409,41 @@ void processSerialCommands() {
             motion::triggerEstop();
             Serial1.println("E-STOP triggered via serial");
 
+          } else if (strcmp(cmd, "loop") == 0) {
+            if (motion::isRunning()) {
+              Serial1.println("ERR: 'loop' rejected — motion in progress");
+            } else {
+              JsonArray commands = doc["commands"].as<JsonArray>();
+              int n = 0;
+              motion::MotionCommand loopCmds[32];
+              for (JsonObject c : commands) {
+                if (n >= 32) break;
+                loopCmds[n].distance     = c["distance"] | 0L;
+                loopCmds[n].acceleration = c["accel"] | 1000.0f;
+                loopCmds[n].maxSpeed     = c["speed"] | 5000.0f;
+                loopCmds[n].absolute     = c["abs"] | false;
+                loopCmds[n].chain        = true; // all loop moves chain
+                n++;
+              }
+              if (n > 0) {
+                if (motion::startLoop(loopCmds, n)) {
+                  Serial1.printf("Loop started: %d commands\n", n);
+                } else {
+                  Serial1.println("ERR: startLoop failed");
+                }
+              } else {
+                Serial1.println("ERR: 'loop' requires non-empty 'commands' array");
+              }
+            }
+
+          } else if (strcmp(cmd, "loop_stop") == 0) {
+            motion::stopLoop();
+            Serial1.println("Loop stop requested");
+
+          } else if (strcmp(cmd, "stop") == 0) {
+            motion::controlledStop();
+            Serial1.println("Controlled stop requested");
+
           } else if (strcmp(cmd, "home") == 0) {
             if (motion::isRunning()) {
               Serial1.println("ERR: 'home' rejected — motion in progress");
