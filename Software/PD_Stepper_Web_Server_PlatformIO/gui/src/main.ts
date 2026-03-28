@@ -75,6 +75,7 @@ const lblJogSpeed     = document.getElementById('lbl-jog-speed')       as HTMLLa
 
 // Linear mode controls
 const chkLinearMode   = document.getElementById('chk-linear-mode')    as HTMLInputElement;
+const chkInvertAxis   = document.getElementById('chk-invert-axis')    as HTMLInputElement;
 const inpMmPerRev     = document.getElementById('inp-mm-per-rev')      as HTMLInputElement;
 const lblMmPerRev     = document.getElementById('lbl-mm-per-rev')      as HTMLLabelElement;
 
@@ -165,7 +166,6 @@ const fbHoldSettled = document.getElementById('fb-hold-settled') as HTMLSpanElem
 
 // Homing card
 const btnHome        = document.getElementById('btn-home')          as HTMLButtonElement;
-const chkHomeInvert  = document.getElementById('chk-home-invert')   as HTMLInputElement;
 const setHomeCurrent = document.getElementById('set-home-current')  as HTMLInputElement;
 const setHomeSpeed1  = document.getElementById('set-home-speed1')   as HTMLInputElement;
 const setHomeSpeed2  = document.getElementById('set-home-speed2')   as HTMLInputElement;
@@ -184,8 +184,16 @@ let activeTuner: AutoTuner | null = null;
 
 // ── Linear mode state ─────────────────────────────────────────────────────────
 
-let linearMode: boolean = localStorage.getItem('linearMode') !== 'false';  // default: true
-let mmPerRev:   number  = parseFloat(localStorage.getItem('mmPerRev') ?? '34.18');
+let linearMode:   boolean = localStorage.getItem('linearMode') !== 'false';  // default: true
+let mmPerRev:     number  = parseFloat(localStorage.getItem('mmPerRev') ?? '34.18');
+let axisInverted: boolean = localStorage.getItem('axisInverted') === 'true'; // default: false
+const inv = (): 1 | -1 => axisInverted ? -1 : 1;
+chkInvertAxis.checked = axisInverted;
+
+chkInvertAxis.addEventListener('change', () => {
+  axisInverted = chkInvertAxis.checked;
+  localStorage.setItem('axisInverted', String(axisInverted));
+});
 
 function setLinearMode(on: boolean): void {
   const prev = linearMode;
@@ -300,7 +308,8 @@ const queueRunner = new QueueRunner(queueStores[0], {
   write: (cmd) => conn.write(cmd),
   getMicrosteps: () => currentMicrosteps,
   getStartPosDeg: () => encToDeg(lastKnownPosEnc),
-  onCommandedPos: (deg) => setCommandedPos(deg),
+  getInvertFactor: () => inv(),
+  onCommandedPos: (deg) => setCommandedPos(inv() * deg),
   onStateChange: (state) => {
     const running = state !== 'idle';
     btnRunQueue.disabled = running || activeStore().length === 0 || !conn.isConnected;
@@ -314,6 +323,7 @@ const queueRunner = new QueueRunner(queueStores[0], {
     // Lock queue tab switching during a run
     queueTabsEl.classList.toggle('disabled', running);
     if (running && state === 'sending') {
+      clearHomingResult();
       lastMoveWasJog = false;  // queue start: next jog after queue must re-sync
       resetPerfAndHold();
       store.clear();
@@ -465,6 +475,7 @@ btnSetZero.addEventListener('click', () => {
 btnGoto.addEventListener('click', () => {
   const rawVal = parseFloat(inpGotoPos.value);
   if (isNaN(rawVal)) return;
+  clearHomingResult();
 
   const distDeg  = linearMode ? mmToDeg(rawVal, mmPerRev) : rawVal;
   const speedInput = parseFloat(inpJogSpeed.value) || (linearMode ? 10 : 60);
@@ -491,7 +502,7 @@ btnGoto.addEventListener('click', () => {
   movesSent++;
 
   const cmd = moveCommand(
-    degToMicrosteps(distDeg, currentMicrosteps),
+    degToMicrosteps(inv() * distDeg, currentMicrosteps),
     rpmToStepsPerSec(speedRPM, currentMicrosteps),
     degPerSec2ToStepsPerSec2(accelDPS2, currentMicrosteps),
     true,   // absolute from zero
@@ -675,9 +686,13 @@ btnEstop.addEventListener('click', () => {
   if (queueRunner.isRunning) queueRunner.abort('E-STOP (GUI)');
 });
 
+function clearHomingResult(): void {
+  homingResultDiv.className = 'homing-result hidden';
+}
+
 // Homing button
 function startHoming(): void {
-  const directionCW = !chkHomeInvert.checked;
+  const directionCW = axisInverted;
   const speed1Raw = parseFloat(setHomeSpeed1.value) || (linearMode ? 0.9 : 30);
   const speed2Raw = parseFloat(setHomeSpeed2.value) || (linearMode ? 0.15 : 5);
   const speed1RPM = linearMode ? mmPerSecToRpm(speed1Raw, mmPerRev) : speed1Raw;
@@ -959,6 +974,7 @@ queueTabBtns.forEach((btn, newIdx) => {
 
 moveForm.addEventListener('submit', (e: Event) => {
   e.preventDefault();
+  clearHomingResult();
   resetPerfAndHold();
   setMotionState('moving');
 
@@ -988,9 +1004,9 @@ moveForm.addEventListener('submit', (e: Event) => {
   chart.update(store);
   movesSent++;
 
-  // Convert to microsteps for the firmware JSON command
+  // Convert to microsteps for the firmware JSON command (invert user-space to firmware space)
   const cmd = moveCommand(
-    degToMicrosteps(distDeg, currentMicrosteps),
+    degToMicrosteps(inv() * distDeg, currentMicrosteps),
     rpmToStepsPerSec(speedRPM, currentMicrosteps),
     degPerSec2ToStepsPerSec2(accelDPS, currentMicrosteps),
     chkAbs.checked,
@@ -1007,6 +1023,7 @@ moveForm.addEventListener('submit', (e: Event) => {
 const DEG_PER_FULL_STEP = 1.8;
 
 function sendJog(sign: 1 | -1): void {
+  clearHomingResult();
   let distDeg: number;
   let speedRPM: number;
 
@@ -1020,8 +1037,9 @@ function sendJog(sign: 1 | -1): void {
 
   // Sync accumulator from firmware when coming from a non-jog state so that
   // the absolute target reflects any position change from queue/GoTo moves.
+  // jogAbsTargetDeg is tracked in user space (inv applied).
   if (!lastMoveWasJog) {
-    jogAbsTargetDeg = encToDeg(lastKnownPosEnc);
+    jogAbsTargetDeg = inv() * encToDeg(lastKnownPosEnc);
   }
   jogAbsTargetDeg += distDeg;
   lastMoveWasJog   = true;
@@ -1031,7 +1049,7 @@ function sendJog(sign: 1 | -1): void {
   const accelDPS2 = linearMode ? mmPerSec2ToDegPerSec2(rawAccel, mmPerRev) : rawAccel;
 
   const cmd = moveCommand(
-    degToMicrosteps(jogAbsTargetDeg, currentMicrosteps),
+    degToMicrosteps(inv() * jogAbsTargetDeg, currentMicrosteps),
     rpmToStepsPerSec(speedRPM, currentMicrosteps),
     degPerSec2ToStepsPerSec2(accelDPS2, currentMicrosteps),
     true,   // absolute — prevents microstep-rounding accumulation across jogs
@@ -1275,31 +1293,39 @@ conn.onStatus = (pkt: StatusPacket): void => {
 
 conn.onPacket = (packet: Packet): void => {
   if (packet.type === 'update') {
-    lastKnownPosEnc = packet.meas;  // track actual encoder position for jog sync
-    // Display in current unit mode
+    lastKnownPosEnc = packet.meas;  // track actual encoder position for jog sync (raw, firmware space)
+    // Apply axis invert for display: user space = inv * firmware space
+    const dispMeas   = inv() * packet.meas;
+    const dispTarget = inv() * packet.target;
+    const dispVel    = inv() * packet.vel;
+    const dispLag    = inv() * packet.lag;
     if (linearMode) {
-      teleMeas.textContent   = `${encToMm(packet.meas,   mmPerRev).toFixed(2)} mm`;
-      teleTarget.textContent = `${encToMm(packet.target, mmPerRev).toFixed(2)} mm`;
-      teleVel.textContent    = `${encPerSecToMmPerSec(packet.vel, mmPerRev).toFixed(2)} mm/s`;
-      teleLag.textContent    = `${encToMm(packet.lag,    mmPerRev).toFixed(3)} mm`;
+      teleMeas.textContent   = `${encToMm(dispMeas,   mmPerRev).toFixed(2)} mm`;
+      teleTarget.textContent = `${encToMm(dispTarget, mmPerRev).toFixed(2)} mm`;
+      teleVel.textContent    = `${encPerSecToMmPerSec(dispVel, mmPerRev).toFixed(2)} mm/s`;
+      teleLag.textContent    = `${encToMm(dispLag,    mmPerRev).toFixed(3)} mm`;
     } else {
-      teleMeas.textContent   = `${encToDeg(packet.meas).toFixed(1)}°`;
-      teleTarget.textContent = `${encToDeg(packet.target).toFixed(1)}°`;
-      teleVel.textContent    = `${encPerSecToRPM(packet.vel).toFixed(1)} RPM`;
-      teleLag.textContent    = `${encToDeg(packet.lag).toFixed(2)}°`;
+      teleMeas.textContent   = `${encToDeg(dispMeas).toFixed(1)}°`;
+      teleTarget.textContent = `${encToDeg(dispTarget).toFixed(1)}°`;
+      teleVel.textContent    = `${encPerSecToRPM(dispVel).toFixed(1)} RPM`;
+      teleLag.textContent    = `${encToDeg(dispLag).toFixed(2)}°`;
     }
     droPosition.textContent = teleMeas.textContent;
 
-    // Chart accumulates during moving/correcting, freezes when settled
+    // Chart accumulates during moving/correcting, freezes when settled.
+    // Push inverted packet so chart series reflect user-space direction.
     const shouldChart = motionState === 'moving' || motionState === 'correcting';
-    store.push(packet, shouldChart);
+    const chartPacket = axisInverted
+      ? { ...packet, meas: -packet.meas, target: -packet.target, lag: -packet.lag, vel: -packet.vel }
+      : packet;
+    store.push(chartPacket, shouldChart);
     if (shouldChart) _chartDirty = true;
 
     _chartDirty = true;
 
     // Update hold accuracy gauge if in hold phase
     if (motionState === 'correcting' || motionState === 'holding') {
-      updateDeviationGauge(packet.lag);
+      updateDeviationGauge(dispLag);
       holdPeakDev.textContent = linearMode
         ? `${encToMm(store.moveStats.holdPeakDevCounts, mmPerRev).toFixed(3)} mm`
         : `${store.moveStats.holdPeakDevDeg.toFixed(2)}°`;

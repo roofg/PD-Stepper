@@ -364,6 +364,12 @@ select:disabled { opacity: 0.4; }
 .homing-control-row { display: flex; align-items: stretch; gap: 12px; margin-bottom: 10px; }
 .homing-control-row .btn-apply-group { flex: 1; }
 .homing-invert-label { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+#homing-settings { margin-top: 10px; }
+#homing-settings > summary { cursor: pointer; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-dim); user-select: none; list-style: none; display: flex; align-items: center; gap: 6px; }
+#homing-settings > summary::before { content: '▶'; font-size: 0.6rem; transition: transform 0.15s; }
+#homing-settings[open] > summary::before { transform: rotate(90deg); }
+#homing-settings > summary::-webkit-details-marker { display: none; }
+#homing-settings > .settings-grid { margin-top: 8px; }
 .homing-result { margin-top: 8px; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; line-height: 1.7; }
 .homing-result.ok    { background: rgba(34,197,94,0.12);  color: var(--green); border: 1px solid rgba(34,197,94,0.25); }
 .homing-result.warn  { background: rgba(251,191,36,0.12); color: var(--amber); border: 1px solid rgba(251,191,36,0.25); }

@@ -21,6 +21,9 @@ export interface RunnerCallbacks {
    *  chain so relative moves are accumulated as a float and sent as absolute,
    *  avoiding per-move microstep rounding accumulation. */
   getStartPosDeg: () => number;
+  /** Axis invert factor: 1 (normal) or -1 (inverted). Applied to user-entered
+   *  distances before converting to firmware microsteps. */
+  getInvertFactor: () => 1 | -1;
   /** Report the accumulated commanded position (degrees) for DRO display. */
   onCommandedPos: (deg: number) => void;
   /** Called when runner state changes. */
@@ -92,11 +95,12 @@ export class QueueRunner {
     const usteps = this._cb.getMicrosteps();
 
     // Collect all move entries as firmware commands (relative distances)
+    const inv = this._cb.getInvertFactor();
     const commands: Array<{ distance: number; speed: number; accel: number; abs: boolean }> = [];
     for (const entry of this._store.entries) {
       if (entry.type !== 'move') continue;  // skip dwells in firmware loop mode
       commands.push({
-        distance: degToMicrosteps(entry.params.distanceDeg, usteps),
+        distance: inv * degToMicrosteps(entry.params.distanceDeg, usteps),
         speed:    rpmToStepsPerSec(entry.params.speedRPM, usteps),
         accel:    degPerSec2ToStepsPerSec2(entry.params.accelDPS2, usteps),
         abs:      entry.params.absolute,
@@ -220,6 +224,7 @@ export class QueueRunner {
     if (group.type === 'moves') {
       this._setState('sending');
       const usteps = this._cb.getMicrosteps();
+      const inv = this._cb.getInvertFactor();
 
       // Mark first entry as running
       this._store.setStatus(group.entries[0].id, 'running');
@@ -228,6 +233,7 @@ export class QueueRunner {
       // stack up. Each move (relative or absolute) is sent as an absolute
       // microstep target derived from the float accumulator, meaning the
       // rounding error across N moves is at most ½ microstep — not N × ½.
+      // accDeg is in firmware space (raw encoder degrees); inv converts from user space.
       if (this._loopAccDeg === null) {
         this._loopAccDeg = this._cb.getStartPosDeg();
       }
@@ -240,9 +246,9 @@ export class QueueRunner {
         const isLast = i === group.entries.length - 1;
 
         if (e.params.absolute) {
-          accDeg = e.params.distanceDeg;  // absolute: set accumulator to target
+          accDeg = inv * e.params.distanceDeg;  // absolute: invert user target to firmware space
         } else {
-          accDeg += e.params.distanceDeg; // relative: accumulate float
+          accDeg += inv * e.params.distanceDeg; // relative: accumulate with inversion
         }
 
         this._cb.onCommandedPos(accDeg);  // update DRO commanded display
