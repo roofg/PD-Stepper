@@ -35,6 +35,15 @@ export interface DwellEntry {
 
 export type QueueEntry = MoveEntry | DwellEntry;
 
+export type SerializedEntry =
+  | { type: 'move';  params: MoveParams }
+  | { type: 'dwell'; params: DwellParams };
+
+export interface SerializedQueue {
+  version: 1;
+  entries: SerializedEntry[];
+}
+
 /** A chain group is either a run of consecutive moves or a single dwell. */
 export type ChainGroup =
   | { type: 'moves'; entries: MoveEntry[] }
@@ -106,6 +115,27 @@ export class QueueStore {
   clear(): void {
     this._entries = [];
     this.onChange?.();
+  }
+
+  serialize(): SerializedQueue {
+    return {
+      version: 1,
+      entries: this._entries.map(e =>
+        e.type === 'move'
+          ? { type: 'move' as const, params: { ...e.params } }
+          : { type: 'dwell' as const, params: { ...e.params } }
+      ),
+    };
+  }
+
+  /** Load from snapshot. Does NOT fire onChange — caller is responsible for rendering. */
+  deserialize(data: SerializedQueue): void {
+    this._entries = data.entries.map(e => ({
+      type:   e.type,
+      id:     genId(),
+      params: { ...e.params },
+      status: 'pending' as const,
+    })) as QueueEntry[];
   }
 
   /** Find entry index by ID. Returns -1 if not found. */

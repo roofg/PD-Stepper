@@ -5,7 +5,7 @@ import { TelemetryStore } from './telemetry-store';
 import { TelemetryChart } from './chart';
 import { encToDeg, encPerSecToRPM, degToMicrosteps, rpmToStepsPerSec, degPerSec2ToStepsPerSec2, degToEnc, stepsPerSecToRPM, rpmToMicrostepsPerSec, encToMm, mmToDeg, degToMm, encPerSecToMmPerSec, mmPerSecToRpm, mmPerSec2ToDegPerSec2, rpmToMmPerSec } from './units';
 import { AutoTuner, type TuneResult, type TunerProgress } from './tuner';
-import { QueueStore, type QueueEntry } from './queue-store';
+import { QueueStore, type QueueEntry, type SerializedQueue } from './queue-store';
 import { QueueRunner } from './queue-runner';
 
 const conn  = new SerialConnection();
@@ -58,6 +58,8 @@ const btnLoopQueue    = document.getElementById('btn-loop-queue')     as HTMLBut
 const btnClearQueue   = document.getElementById('btn-clear-queue')    as HTMLButtonElement;
 const blockStatsSection = document.getElementById('block-stats-section') as HTMLElement;
 const blockStatsList  = document.getElementById('block-stats-list')   as HTMLDivElement;
+const queueTabsEl     = document.getElementById('queue-tabs')          as HTMLDivElement;
+const queueTabBtns    = Array.from(queueTabsEl.querySelectorAll<HTMLButtonElement>('.tab'));
 
 // Jog / Position Control
 const btnJogNeg       = document.getElementById('btn-jog-neg')         as HTMLButtonElement;
@@ -273,15 +275,34 @@ function applyUnitMode(): void {
 
 // ── Queue ──────────────────────────────────────────────────────────────────────
 
-const queueStore = new QueueStore();
-const queueRunner = new QueueRunner(queueStore, {
+const QUEUE_COUNT = 3;
+const QUEUE_KEYS = ['pdstepper_q0', 'pdstepper_q1', 'pdstepper_q2'] as const;
+const queueStores: QueueStore[] = Array.from({ length: QUEUE_COUNT }, () => new QueueStore());
+let activeQueueIdx = 0;
+function activeStore(): QueueStore { return queueStores[activeQueueIdx]; }
+
+function loadQueues(): void {
+  for (let i = 0; i < QUEUE_COUNT; i++) {
+    const raw = localStorage.getItem(QUEUE_KEYS[i]);
+    if (!raw) continue;
+    try {
+      const data = JSON.parse(raw) as SerializedQueue;
+      if (data?.version === 1 && Array.isArray(data.entries)) {
+        queueStores[i].deserialize(data);
+      }
+    } catch { /* corrupt — leave empty */ }
+  }
+}
+loadQueues();
+
+const queueRunner = new QueueRunner(queueStores[0], {
   write: (cmd) => conn.write(cmd),
   getMicrosteps: () => currentMicrosteps,
   getStartPosDeg: () => encToDeg(lastKnownPosEnc),
   onCommandedPos: (deg) => setCommandedPos(deg),
   onStateChange: (state) => {
     const running = state !== 'idle';
-    btnRunQueue.disabled = running || queueStore.length === 0;
+    btnRunQueue.disabled = running || activeStore().length === 0 || !conn.isConnected;
     btnClearQueue.disabled = running;
     btnAddMove.disabled = running;
     btnAddDwell.disabled = running;
@@ -289,6 +310,8 @@ const queueRunner = new QueueRunner(queueStore, {
     btnMove.disabled = running;
     btnJogNeg.disabled = running;
     btnJogPos.disabled = running;
+    // Lock queue tab switching during a run
+    queueTabsEl.classList.toggle('disabled', running);
     if (running && state === 'sending') {
       lastMoveWasJog = false;  // queue start: next jog after queue must re-sync
       resetPerfAndHold();
@@ -377,7 +400,7 @@ function setMotionEnabled(on: boolean): void {
   inpSpeed.disabled    = !on;
   inpAccel.disabled    = !on;
   chkAbs.disabled      = !on;
-  btnRunQueue.disabled = !on || queueStore.length === 0;
+  btnRunQueue.disabled = !on || activeStore().length === 0;
   btnJogNeg.disabled   = !on;
   btnJogPos.disabled   = !on;
   btnGoto.disabled     = !on;
@@ -702,7 +725,7 @@ btnAddMove.addEventListener('click', () => {
   const rawDist  = parseFloat(inpDistance.value) || 0;
   const rawSpeed = parseFloat(inpSpeed.value)    || (linearMode ? 10 : 112);
   const rawAccel = parseFloat(inpAccel.value)    || 500;
-  queueStore.addMove({
+  activeStore().addMove({
     distanceDeg: linearMode ? mmToDeg(rawDist, mmPerRev)                : rawDist,
     speedRPM:    linearMode ? mmPerSecToRpm(rawSpeed, mmPerRev)         : rawSpeed,
     accelDPS2:   linearMode ? mmPerSec2ToDegPerSec2(rawAccel, mmPerRev) : rawAccel,
@@ -710,7 +733,7 @@ btnAddMove.addEventListener('click', () => {
   });
 });
 btnAddDwell.addEventListener('click', () => {
-  queueStore.addDwell({ durationMs: parseFloat(inpDwell.value) || 500 });
+  activeStore().addDwell({ durationMs: parseFloat(inpDwell.value) || 500 });
 });
 
 // Run queue
@@ -734,20 +757,20 @@ btnLoopQueue.addEventListener('click', () => {
 
 // Clear queue
 btnClearQueue.addEventListener('click', () => {
-  queueStore.clear();
+  activeStore().clear();
   blockStatsSection.classList.add('hidden');
 });
 
 // Queue rendering
 function renderQueue(): void {
-  queueCount.textContent = `${queueStore.length} entries`;
-  btnRunQueue.disabled = queueStore.length === 0 || queueRunner.isRunning || !conn.isConnected;
+  queueCount.textContent = `${activeStore().length} entries`;
+  btnRunQueue.disabled = activeStore().length === 0 || queueRunner.isRunning || !conn.isConnected;
 
   queueList.innerHTML = '';
   let moveNum = 0, dwellNum = 0;
 
-  for (let i = 0; i < queueStore.entries.length; i++) {
-    const entry = queueStore.entries[i];
+  for (let i = 0; i < activeStore().entries.length; i++) {
+    const entry = activeStore().entries[i];
     const div = document.createElement('div');
     div.className = 'queue-entry';
     div.dataset.id = entry.id;
@@ -783,7 +806,7 @@ function renderQueue(): void {
     // Delete handler
     div.querySelector('.queue-delete')!.addEventListener('click', (e) => {
       e.stopPropagation();
-      queueStore.remove(entry.id);
+      activeStore().remove(entry.id);
     });
 
     // Edit handler
@@ -807,7 +830,7 @@ function renderQueue(): void {
       e.preventDefault();
       div.classList.remove('drag-over');
       const fromIdx = parseInt(e.dataTransfer!.getData('text/plain'), 10);
-      queueStore.move(fromIdx, i);
+      activeStore().move(fromIdx, i);
     });
 
     queueList.appendChild(div);
@@ -839,7 +862,7 @@ function startInlineEdit(div: HTMLDivElement, entry: QueueEntry): void {
       const d = parseFloat(inputs[0].value) || 0;
       const s = parseFloat(inputs[1].value) || (linearMode ? 10 : 112);
       const a = parseFloat(inputs[2].value) || 500;
-      queueStore.updateEntry(entry.id, {
+      activeStore().updateEntry(entry.id, {
         distanceDeg: linearMode ? mmToDeg(d, mmPerRev)                : d,
         speedRPM:    linearMode ? mmPerSecToRpm(s, mmPerRev)          : s,
         accelDPS2:   linearMode ? mmPerSec2ToDegPerSec2(a, mmPerRev)  : a,
@@ -852,7 +875,7 @@ function startInlineEdit(div: HTMLDivElement, entry: QueueEntry): void {
     `;
     const input = fields.querySelector('input')!;
     fields.querySelector('button')!.addEventListener('click', () => {
-      queueStore.updateEntry(entry.id, { durationMs: parseFloat(input.value) || 500 });
+      activeStore().updateEntry(entry.id, { durationMs: parseFloat(input.value) || 500 });
     });
   }
 
@@ -908,7 +931,27 @@ function renderBlockStats(): void {
   }
 }
 
-queueStore.onChange = renderQueue;
+// Wire onChange for all 3 stores — save to localStorage and re-render if active
+for (let i = 0; i < QUEUE_COUNT; i++) {
+  const idx = i;
+  queueStores[i].onChange = () => {
+    if (idx === activeQueueIdx) renderQueue();
+    try { localStorage.setItem(QUEUE_KEYS[idx], JSON.stringify(queueStores[idx].serialize())); }
+    catch { /* storage quota exceeded */ }
+  };
+}
+
+// Queue tab switching (Queue 1 / 2 / 3)
+queueTabBtns.forEach((btn, newIdx) => {
+  btn.addEventListener('click', () => {
+    if (queueRunner.isRunning) return;  // JS guard (CSS blocks pointer-events first)
+    queueTabBtns.forEach((b, i) => b.classList.toggle('active', i === newIdx));
+    activeQueueIdx = newIdx;
+    queueRunner.setStore(queueStores[newIdx]);
+    blockStatsSection.classList.add('hidden');
+    renderQueue();
+  });
+});
 
 // ── Move command ─────────────────────────────────────────────────────────────
 

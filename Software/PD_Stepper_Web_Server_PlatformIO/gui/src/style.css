@@ -545,6 +545,10 @@ select:disabled { opacity: 0.4; }
   color: #fff;
   border-color: var(--accent);
 }
+.queue-tabs.disabled .tab {
+  opacity: 0.4;
+  pointer-events: none;
+}
 
 .btn-add-entry {
   width: 100%;

@@ -58,6 +58,11 @@ export class QueueRunner {
   get isRunning(): boolean { return this._state !== 'idle'; }
   get isFirmwareLoop(): boolean { return this._firmwareLoop; }
 
+  /** Swap the backing store. Only call when state === 'idle'. */
+  setStore(store: QueueStore): void {
+    this._store = store;
+  }
+
   /** Start executing the queue from the beginning. */
   start(): void {
     if (this._state !== 'idle') return;
