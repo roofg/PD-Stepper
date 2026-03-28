@@ -49,8 +49,9 @@ static int   setSpreadCycleSpeed = 0;  // steps/s threshold for StealthChop→Sp
 static float setKp     = 3.0f;
 static float setKd     = 0.1f;
 static float setKv     = 0.0f;
+static float setKa     = 0.0f;   // acceleration feedforward gain (seconds)
 static float setDAlpha = 0.8f;
-static float setJerk   = 0.0f;  // ramp time in ms; 0 = auto (~10 ms, trapezoidal)
+static float setJerk   = 0.0f;  // absolute jerk (µsteps/s³ / 1000); 0 = auto
 
 // Note: button debounce and open-loop position control variables have been
 // removed — the new motion architecture handles all motion via serial commands.
@@ -184,11 +185,11 @@ void setup() {
   Serial1.println("Setup complete");
 }
 
-/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 25 bytes) over USBSerial.
+/// @brief Send a binary SETTINGS packet (0xAA 0xEE, 29 bytes) over USBSerial.
 /// Safe to call from setup() and processSerialCommands() (both run when
 /// TelemetryTask is idle).  g_usbWriteMutex serialises against DiagnosticsTask.
 void sendSettingsPacket() {
-  uint8_t buf[27];
+  uint8_t buf[29];
   buf[0] = 0xAA; buf[1] = 0xEE;
   buf[2] = (uint8_t)setVoltage;
   buf[3] = (uint8_t)setCurrent;
@@ -221,16 +222,19 @@ void sendSettingsPacket() {
   uint16_t daInt = (uint16_t)(daClamped * 10000.0f);
   buf[20] = daInt & 0xFF; buf[21] = daInt >> 8;
   float jerkClamped = setJerk < 0.0f ? 0.0f : (setJerk > 65535.0f ? 65535.0f : setJerk);
-  uint16_t jerkInt = (uint16_t)jerkClamped;  // ramp time in ms, 1 ms resolution
+  uint16_t jerkInt = (uint16_t)jerkClamped;  // absolute jerk / 1000 (kilo-µsteps/s³)
   buf[22] = jerkInt & 0xFF; buf[23] = jerkInt >> 8;
   float dbClamped = motion::getHoldDeadband();
   uint16_t dbInt = (uint16_t)(dbClamped * 100.0f);  // x100: 4.0 → 400, max 20.0 → 2000
   buf[24] = dbInt & 0xFF; buf[25] = dbInt >> 8;
+  float kaClamped = setKa < 0.0f ? 0.0f : (setKa > 0.65535f ? 0.65535f : setKa);
+  uint16_t kaInt = (uint16_t)(kaClamped * 100000.0f);  // same encoding as Kv
+  buf[26] = kaInt & 0xFF; buf[27] = kaInt >> 8;
   uint8_t cs = 0;
-  for (int i = 2; i < 26; i++) cs ^= buf[i];
-  buf[26] = cs;
+  for (int i = 2; i < 28; i++) cs ^= buf[i];
+  buf[28] = cs;
   UsbWriteGuard guard;
-  if (guard) USBSerial.write(buf, 27);
+  if (guard) USBSerial.write(buf, 29);
 }
 
 void processSerialCommands() {
@@ -277,10 +281,16 @@ void processSerialCommands() {
             Serial1.printf("Set PD - Kp: %.4f, Kd: %.4f, d_alpha: %.4f\n", kp, kd, da);
 
           } else if (strcmp(cmd, "set_jerk") == 0) {
-            float ms = doc["value"] | 0.0f;
-            setJerk = ms;
-            motion::setJerkRampTime(ms / 1000.0f);
-            Serial1.printf("Set jerk ramp time: %.0f ms\n", ms);
+            float val = doc["value"] | 0.0f;  // kilo-µsteps/s³ (×1000 to get µsteps/s³)
+            setJerk = val;
+            motion::setJerk(val * 1000.0f);    // absolute jerk in µsteps/s³
+            Serial1.printf("Set jerk: %.0f k-µsteps/s³\n", val);
+
+          } else if (strcmp(cmd, "set_ka") == 0) {
+            float ka = doc["value"] | 0.0f;
+            setKa = ka;
+            motion::setAccelFFGain(ka);
+            Serial1.printf("Set Ka: %.6f s\n", ka);
 
           } else if (strcmp(cmd, "set_hold_deadband") == 0) {
             motion::setHoldDeadband((float)doc["value"]);
@@ -488,13 +498,13 @@ void processSerialCommands() {
                 "\"hold_delay\":%d,\"microsteps\":%d,"
                 "\"stall_threshold\":%d,\"standstill_mode\":\"%s\","
                 "\"stealthchop\":%s,\"coolstep\":%s,"
-                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,\"d_alpha\":%.4f,\"jerk\":%.1f,"
+                "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.6f,\"ka\":%.6f,\"d_alpha\":%.4f,\"jerk\":%.1f,"
                 "\"holdDeadband\":%.2f}\n",
                 setVoltage, setCurrent, setHoldCurrent, setHoldDelay,
                 setMicrosteps, setStall, standstillMode,
                 stealthchopEnabled ? "true" : "false",
                 coolstepEnabled    ? "true" : "false",
-                setKp, setKd, setKv, setDAlpha, setJerk,
+                setKp, setKd, setKv, setKa, setDAlpha, setJerk,
                 motion::getHoldDeadband());
             sendSettingsPacket();
 
@@ -650,16 +660,18 @@ void readSettings() {
     setKp     = preferences.getFloat("kp",      3.0f);
     setKd     = preferences.getFloat("kd",      0.1f);
     setKv     = preferences.getFloat("kv",      0.0f);
+    setKa     = preferences.getFloat("ka",      0.0f);
     setDAlpha = preferences.getFloat("d_alpha", 0.8f);
-    setJerk   = preferences.getFloat("jerk_ms", 0.0f);
+    setJerk   = preferences.getFloat("jerk_abs", 0.0f);  // absolute jerk (kilo-µsteps/s³)
     float holdDeadband = preferences.getFloat("holdDeadband", 4.0f);
     preferences.end();
     // Apply PD gains now (motion tasks pick them up on start)
     motion::setPD(setKp, setKd);
     motion::setPhaseLeadGain(setKv);
+    motion::setAccelFFGain(setKa);
     motion::setDFilterAlpha(setDAlpha);
     if (setJerk > 0.0f) {
-        motion::setJerkRampTime(setJerk / 1000.0f);
+        motion::setJerk(setJerk * 1000.0f);  // absolute jerk in µsteps/s³
     }
     motion::setHoldDeadband(holdDeadband);
   }
@@ -680,8 +692,9 @@ void writeSettings() {
   preferences.putFloat("kp",           setKp);
   preferences.putFloat("kd",           setKd);
   preferences.putFloat("kv",           setKv);
+  preferences.putFloat("ka",           setKa);
   preferences.putFloat("d_alpha",      setDAlpha);
-  preferences.putFloat("jerk_ms",      setJerk);
+  preferences.putFloat("jerk_abs",     setJerk);
   preferences.putFloat("holdDeadband", motion::getHoldDeadband());
   Serial1.println("Saving settings to flash");
   preferences.end();

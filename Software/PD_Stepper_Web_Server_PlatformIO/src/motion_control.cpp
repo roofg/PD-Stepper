@@ -57,6 +57,7 @@ static volatile int32_t g_uSteps_setting = 32;
 static volatile float g_kp      = 3.0f;
 static volatile float g_kd      = 0.1f;
 static volatile float g_kv      = 0.0f;
+static volatile float g_ka      = 0.0f;  // acceleration feedforward gain (seconds)
 static volatile float g_d_alpha = 0.8f;  // D-term EMA filter coefficient
 static volatile float g_jerk        = 0.0f;  // µsteps/s³; 0 = auto (maxA * 100)
 static volatile float g_jerk_ramp_s = 0.0f;  // ramp time in seconds; 0 = use g_jerk
@@ -114,7 +115,7 @@ using planner::JerkConfig;
 
 // Build a JerkConfig from the current volatile globals.
 static JerkConfig currentJerkConfig() {
-    return { g_jerk_ramp_s, g_jerk };
+    return { g_jerk, g_jerk_ramp_s };
 }
 
 
@@ -696,7 +697,7 @@ static void ControlTask(void *) {
                     } else {
                         // Outside deadband — correct and reset settle timer
                         g_settle_start_ms = 0;
-                        float correction = pd.compute(g_hold_target, 0.0f, measPos, 0.001f);
+                        float correction = pd.compute(g_hold_target, 0.0f, 0.0f, measPos, 0.001f);
                         stepgen::setVelocity(correction);
                     }
                 }
@@ -785,6 +786,7 @@ static void ControlTask(void *) {
         // --- Refresh PD gains (written infrequently by main task at rest) ---
         pd.setGains(g_kp, g_kd);
         pd.setPhaseLeadGain(g_kv);
+        pd.setAccelFFGain(g_ka);
         pd.setDFilterAlpha(g_d_alpha);
 
         // --- Consume latest trajectory point (reuse last if buffer empty) ---
@@ -794,7 +796,7 @@ static void ControlTask(void *) {
         }
 
         // --- PD + feedforward velocity command ---
-        float correction  = pd.compute(ref.pos, ref.vel, measPos, 0.001f);
+        float correction  = pd.compute(ref.pos, ref.vel, ref.acc, measPos, 0.001f);
         float velocity_cmd = ref.vel + correction;
         stepgen::setVelocity(velocity_cmd);
 
@@ -861,6 +863,10 @@ void setPD(float kp, float kd) {
 
 void setPhaseLeadGain(float kv) {
     g_kv = kv;
+}
+
+void setAccelFFGain(float ka) {
+    g_ka = ka;
 }
 
 void setDFilterAlpha(float alpha) {

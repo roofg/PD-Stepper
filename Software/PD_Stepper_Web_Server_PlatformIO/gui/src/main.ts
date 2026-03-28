@@ -108,6 +108,7 @@ const setKd           = document.getElementById('set-kd')             as HTMLInp
 const setDAlpha       = document.getElementById('set-d-alpha')        as HTMLInputElement;
 const setJerkInput    = document.getElementById('set-jerk')           as HTMLInputElement;
 const setKv           = document.getElementById('set-kv')             as HTMLInputElement;
+const setKa           = document.getElementById('set-ka')             as HTMLInputElement;
 const setHoldDeadband = document.getElementById('set-hold-deadband')  as HTMLInputElement;
 const btnApplyPd      = document.getElementById('btn-apply-pd')       as HTMLButtonElement;
 const btnSave         = document.getElementById('btn-save')           as HTMLButtonElement;
@@ -413,6 +414,7 @@ function setSettingsEnabled(on: boolean): void {
   setDAlpha.disabled      = !on;
   setJerkInput.disabled   = !on;
   setKv.disabled          = !on;
+  setKa.disabled          = !on;
   setHoldDeadband.disabled = !on;
   btnApplyPd.disabled     = !on;
   btnAutotune.disabled    = !on;
@@ -1054,6 +1056,7 @@ btnApplyPd.addEventListener('click', () => {
   sendCmd({ cmd: 'set_pd', kp: currentKp, kd: currentKd, d_alpha: parseFloat(setDAlpha.value) });
   sendCmd({ cmd: 'set_jerk', value: parseFloat(setJerkInput.value) });
   sendCmd({ cmd: 'set_phase_lead', kv: parseFloat(setKv.value) });
+  sendCmd({ cmd: 'set_ka', value: parseFloat(setKa.value) });
   sendCmd({ cmd: 'set_hold_deadband', value: parseFloat(setHoldDeadband.value) });
 });
 btnSave.addEventListener('click', () => {
@@ -1198,6 +1201,7 @@ conn.onSettings = (pkt: SettingsPacket): void => {
   setDAlpha.value     = pkt.d_alpha.toFixed(2);
   setJerkInput.value  = pkt.jerk.toFixed(0);
   setKv.value         = pkt.kv.toFixed(5);
+  setKa.value         = pkt.ka.toFixed(5);
   setHoldDeadband.value = pkt.holdDeadband.toFixed(1);
 
 };

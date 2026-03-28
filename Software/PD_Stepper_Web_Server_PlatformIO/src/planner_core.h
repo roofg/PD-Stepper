@@ -38,9 +38,14 @@ struct PlannedBlock {
 
 // S-curve jerk configuration passed to TrajectoryPlanner::resetForBlock().
 // Decoupled from global state so the planner core is stateless/testable.
+//
+// Priority: jerkAbsolute > jerkRampSeconds > auto (maxA * 100, ~10ms ramp).
+// Absolute jerk (µsteps/s³) is preferred because at higher accelerations the
+// ramp time lengthens automatically, producing smoother mechanical transitions
+// without the user having to retune per-move.
 struct JerkConfig {
-    float jerkRampSeconds;  // ramp time (s); 0 = use jerkAbsolute or auto
-    float jerkAbsolute;     // absolute jerk (µsteps/s³); 0 = auto
+    float jerkAbsolute;     // absolute jerk (µsteps/s³); 0 = use rampSeconds or auto
+    float jerkRampSeconds;  // ramp time (s); 0 = auto
 };
 
 static constexpr int MAX_CHAIN_LEN = 32;
@@ -87,10 +92,10 @@ public:
         cruiseVel   = blk.cruiseVel;
         exitVel     = blk.exitVel;
         maxA        = (blk.accel > 1.0f) ? blk.accel : 1.0f;
-        if (jcfg.jerkRampSeconds > 0.0f) {
-            jerk = maxA / jcfg.jerkRampSeconds;    // ramp-time mode: auto-scales with accel
-        } else if (jcfg.jerkAbsolute > 0.0f) {
-            jerk = jcfg.jerkAbsolute;              // legacy absolute µsteps/s³
+        if (jcfg.jerkAbsolute > 0.0f) {
+            jerk = jcfg.jerkAbsolute;              // absolute µsteps/s³ (preferred)
+        } else if (jcfg.jerkRampSeconds > 0.0f) {
+            jerk = maxA / jcfg.jerkRampSeconds;    // ramp-time mode (legacy)
         } else {
             jerk = maxA * 100.0f;                  // auto (~10 ms ramp, essentially trapezoidal)
         }

@@ -25,12 +25,19 @@
 //   d_alpha = 0.8 → ~35 Hz cutoff, attenuates encoder tick noise ~20×
 //   d_alpha = 0.95 → ~8 Hz cutoff, very smooth but D response becomes sluggish
 //
+// Acceleration feedforward (Ka) proactively compensates for inertial load
+// during accel/decel phases. Without it, the PD loop must build up position
+// error before it can react — causing oscillation with heavy loads. Ka has
+// units of seconds (converts accel µsteps/s² → velocity offset µsteps/s).
+// Start at 0, tune upward in steps of 0.0005. Typical range: 0.0005–0.005.
+//
 // Usage:
 //   PDController pd;
 //   pd.setGains(kp, kd);
 //   pd.setPhaseLeadGain(kv);       // start at 0, tune upward
+//   pd.setAccelFFGain(ka);         // start at 0, tune upward
 //   pd.setDFilterAlpha(d_alpha);   // start at 0.8, tune if needed
-//   float correction = pd.compute(ref_pos, ref_vel, measured_pos, dt);
+//   float correction = pd.compute(ref_pos, ref_vel, ref_acc, measured_pos, dt);
 //   float velocity_cmd = ref_vel + correction;
 //
 // The compute() return value is the velocity correction in microsteps/sec.
@@ -40,6 +47,7 @@ struct PDController {
     float Kp = 3.0f;
     float Kd = 0.1f;
     float Kv = 0.0f;              // phase-lead gain (microsteps lead per unit velocity)
+    float Ka = 0.0f;              // acceleration feedforward gain (seconds)
     float d_alpha = 0.8f;         // EMA filter coefficient for D term (0=off, <1=smoother)
     float max_correction = 5000.0f; // clamp (microsteps/sec)
 
@@ -57,10 +65,12 @@ struct PDController {
     }
 
     void setPhaseLeadGain(float kv) { Kv = kv; }
+    void setAccelFFGain(float ka)   { Ka = ka; }
     void setDFilterAlpha(float a)   { d_alpha = a; }
 
     // Returns velocity correction in microsteps/sec.
-    float compute(float target_pos, float target_vel, float measured_pos, float dt) {
+    float compute(float target_pos, float target_vel, float target_acc,
+                  float measured_pos, float dt) {
         // Phase-lead: advance reference position proportional to current velocity
         float phase_lead     = Kv * target_vel;
         float commanded_pos  = target_pos + phase_lead;
@@ -76,7 +86,8 @@ struct PDController {
         // EMA low-pass filter: attenuates encoder quantization spikes on D term
         filtered_rate = d_alpha * filtered_rate + (1.0f - d_alpha) * raw_rate;
 
-        float correction = Kp * error + Kd * filtered_rate;
+        // PD correction + acceleration feedforward
+        float correction = Kp * error + Kd * filtered_rate + Ka * target_acc;
 
         // Clamp so feedback never exceeds a safe fraction of max speed
         if (correction >  max_correction) correction =  max_correction;

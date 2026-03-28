@@ -56,13 +56,18 @@
               </label>
             </div>
             <div class="settings-row">
-              <label class="settings-label">Jerk Ramp (ms)
-                <input type="number" id="set-jerk" value="0" step="10" min="0" max="1000" placeholder="0 = auto (~10ms)" disabled />
+              <label class="settings-label">Jerk (k-µsteps/s³)
+                <input type="number" id="set-jerk" value="0" step="100" min="0" max="65535" placeholder="0 = auto" disabled />
               </label>
             </div>
             <div class="settings-row">
               <label class="settings-label">Kv (Phase Lead)
                 <input type="number" id="set-kv" value="0.0" step="0.001" min="0" disabled />
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">Ka (Accel FF)
+                <input type="number" id="set-ka" value="0.0" step="0.0005" min="0" disabled />
               </label>
             </div>
             <div class="settings-row">

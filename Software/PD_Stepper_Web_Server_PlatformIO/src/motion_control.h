@@ -23,6 +23,12 @@ void setPD(float kp, float kd);
 // Start at 0 and increase in small steps during tuning.
 void setPhaseLeadGain(float kv);
 
+// Acceleration feedforward gain (seconds). Converts planned acceleration
+// (µsteps/s²) into a proactive velocity offset (µsteps/s), reducing the
+// position error that the PD loop must correct during accel/decel phases.
+// Start at 0, increase in steps of 0.0005. Typical range: 0.0005–0.005.
+void setAccelFFGain(float ka);
+
 // Set the D-term EMA filter coefficient (0.0 = no filter, 0.8 = ~35 Hz cutoff).
 // Higher values attenuate encoder quantization noise on the derivative more
 // aggressively; values above ~0.95 make the D term sluggish.

@@ -251,7 +251,7 @@ void test_trajectory_velocity_continuity() {
 
 void test_trajectory_scurve_jerk() {
     PlannedBlock blk = { 10000.0f, 0.0f, 5000.0f, 0.0f, 20000.0f, true };
-    JerkConfig jcfg = { 0.15f, 0.0f };
+    JerkConfig jcfg = { 0.0f, 0.15f };  // ramp-time mode: 150ms
 
     TrajectoryPlanner tp;
     tp.currentVel = 0.0f;
@@ -739,7 +739,7 @@ void test_deadband_suppresses_small_error() {
     pd.setGains(3.0f, 0.1f);
     pd.reset();
 
-    float correction = pd.compute(100.0f, 0.0f, 99.0f, 0.001f);
+    float correction = pd.compute(100.0f, 0.0f, 0.0f, 99.0f, 0.001f);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, correction);
 }
 
@@ -748,7 +748,7 @@ void test_deadband_passes_larger_error() {
     pd.setGains(3.0f, 0.1f);
     pd.reset();
 
-    float correction = pd.compute(100.0f, 0.0f, 95.0f, 0.001f);
+    float correction = pd.compute(100.0f, 0.0f, 0.0f, 95.0f, 0.001f);
     TEST_ASSERT_TRUE(correction > 0.0f);
 }
 
@@ -758,9 +758,9 @@ void test_proportional_response() {
     pd.setDFilterAlpha(0.0f);
     pd.reset();
 
-    pd.compute(100.0f, 0.0f, 90.0f, 0.001f);
+    pd.compute(100.0f, 0.0f, 0.0f, 90.0f, 0.001f);
     pd.reset();
-    float correction = pd.compute(100.0f, 0.0f, 90.0f, 0.001f);
+    float correction = pd.compute(100.0f, 0.0f, 0.0f, 90.0f, 0.001f);
 
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 30.0f, correction);
 }
@@ -772,15 +772,15 @@ void test_clamp_limits_correction() {
     pd.max_correction = 5000.0f;
     pd.reset();
 
-    pd.compute(1000.0f, 0.0f, 0.0f, 0.001f);
+    pd.compute(1000.0f, 0.0f, 0.0f, 0.0f, 0.001f);
     pd.reset();
-    float correction = pd.compute(1000.0f, 0.0f, 0.0f, 0.001f);
+    float correction = pd.compute(1000.0f, 0.0f, 0.0f, 0.0f, 0.001f);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 5000.0f, correction);
 
     pd.reset();
-    pd.compute(0.0f, 0.0f, 1000.0f, 0.001f);
+    pd.compute(0.0f, 0.0f, 0.0f, 1000.0f, 0.001f);
     pd.reset();
-    float negCorr = pd.compute(0.0f, 0.0f, 1000.0f, 0.001f);
+    float negCorr = pd.compute(0.0f, 0.0f, 0.0f, 1000.0f, 0.001f);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, -5000.0f, negCorr);
 }
 
@@ -791,17 +791,36 @@ void test_phase_lead() {
     pd.setPhaseLeadGain(0.001f);
     pd.reset();
 
-    pd.compute(100.0f, 10000.0f, 100.0f, 0.001f);
+    pd.compute(100.0f, 10000.0f, 0.0f, 100.0f, 0.001f);
     pd.reset();
-    float correction = pd.compute(100.0f, 10000.0f, 100.0f, 0.001f);
+    float correction = pd.compute(100.0f, 10000.0f, 0.0f, 100.0f, 0.001f);
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 30.0f, correction);
 
     pd.setPhaseLeadGain(0.0f);
     pd.reset();
-    pd.compute(100.0f, 10000.0f, 100.0f, 0.001f);
+    pd.compute(100.0f, 10000.0f, 0.0f, 100.0f, 0.001f);
     pd.reset();
-    float corrNoLead = pd.compute(100.0f, 10000.0f, 100.0f, 0.001f);
+    float corrNoLead = pd.compute(100.0f, 10000.0f, 0.0f, 100.0f, 0.001f);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, corrNoLead);
+}
+
+void test_accel_feedforward() {
+    PDController pd;
+    pd.setGains(0.0f, 0.0f);    // disable P and D
+    pd.setDFilterAlpha(0.0f);
+    pd.setAccelFFGain(0.002f);   // Ka = 2 ms
+    pd.reset();
+
+    // Position matches exactly — only Ka * acc contributes
+    float correction = pd.compute(100.0f, 0.0f, 500000.0f, 100.0f, 0.001f);
+    // Expected: Ka * acc = 0.002 * 500000 = 1000
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 1000.0f, correction);
+
+    // With Ka = 0, no feedforward
+    pd.setAccelFFGain(0.0f);
+    pd.reset();
+    float corrNoKa = pd.compute(100.0f, 0.0f, 500000.0f, 100.0f, 0.001f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, corrNoKa);
 }
 
 void test_ema_filter_suppresses_spikes() {
@@ -810,14 +829,14 @@ void test_ema_filter_suppresses_spikes() {
     pd.setDFilterAlpha(0.95f);
     pd.reset();
 
-    float corr1 = pd.compute(100.0f, 0.0f, 0.0f, 0.001f);
+    float corr1 = pd.compute(100.0f, 0.0f, 0.0f, 0.0f, 0.001f);
     TEST_ASSERT_TRUE(std::fabs(corr1) <= 5001.0f);
 
     PDController pdNoFilter;
     pdNoFilter.setGains(0.0f, 1.0f);
     pdNoFilter.setDFilterAlpha(0.0f);
     pdNoFilter.reset();
-    float corrNoFilter = pdNoFilter.compute(100.0f, 0.0f, 0.0f, 0.001f);
+    float corrNoFilter = pdNoFilter.compute(100.0f, 0.0f, 0.0f, 0.0f, 0.001f);
     TEST_ASSERT_TRUE(std::fabs(corrNoFilter) <= 5001.0f);
 }
 
@@ -827,8 +846,8 @@ void test_d_term_responds_to_change() {
     pd.setDFilterAlpha(0.0f);
     pd.reset();
 
-    pd.compute(110.0f, 0.0f, 100.0f, 0.001f);
-    float correction = pd.compute(120.0f, 0.0f, 100.0f, 0.001f);
+    pd.compute(110.0f, 0.0f, 0.0f, 100.0f, 0.001f);
+    float correction = pd.compute(120.0f, 0.0f, 0.0f, 100.0f, 0.001f);
 
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 5000.0f, correction);
 }
@@ -837,8 +856,8 @@ void test_reset_clears_state() {
     PDController pd;
     pd.setGains(3.0f, 0.1f);
 
-    pd.compute(100.0f, 0.0f, 50.0f, 0.001f);
-    pd.compute(100.0f, 0.0f, 60.0f, 0.001f);
+    pd.compute(100.0f, 0.0f, 0.0f, 50.0f, 0.001f);
+    pd.compute(100.0f, 0.0f, 0.0f, 60.0f, 0.001f);
 
     pd.reset();
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, pd.prev_error);
@@ -913,6 +932,7 @@ int main() {
     RUN_TEST(test_proportional_response);
     RUN_TEST(test_clamp_limits_correction);
     RUN_TEST(test_phase_lead);
+    RUN_TEST(test_accel_feedforward);
     RUN_TEST(test_ema_filter_suppresses_spikes);
     RUN_TEST(test_d_term_responds_to_change);
     RUN_TEST(test_reset_clears_state);
